@@ -14,6 +14,7 @@
  */
 
 // Import LibAV.base if applicable
+let _scriptName;
 if (typeof _scriptName === "undefined") {
     if (typeof LibAV === "object" && LibAV && LibAV.base)
         _scriptName = LibAV.base + "/libav-@VER-@VARIANT.@DBG@TARGET.@JS";
