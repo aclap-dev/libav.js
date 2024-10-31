@@ -22,7 +22,7 @@ if (typeof _scriptName === "undefined") {
         _scriptName = self.location.href;
 }
 
-Module.printErr = console.warn.bind(console);
+Module.printErr = console.log.bind(console);
 
 Module.locateFile = function(path, prefix) {
     // if it's the wasm file
