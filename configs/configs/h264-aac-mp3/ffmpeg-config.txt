@@ -2,6 +2,7 @@
 --enable-filter=aresample
 --enable-filter=asetnsamples
 --enable-muxer=mp4
+--enable-muxer=matroska
 --enable-demuxer=aac
 --enable-parser=aac
 --enable-decoder=aac
