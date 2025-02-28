@@ -215,7 +215,7 @@ Index: ffmpeg-4.4.4/libavformat/jsfetch.c
 +    .priv_data_size     = sizeof(JSFetchContext),
 +    .priv_data_class    = &jsfetch_context_class,
 +    .flags              = URL_PROTOCOL_FLAG_NETWORK,
-+    .default_whitelist  = "jsfetch,http,https"
++    .default_whitelist  = "jsfetch,http,https,blob,"
 +};
 +#endif
 Index: ffmpeg-4.4.4/libavformat/protocols.c
