@@ -21,3 +21,4 @@
 --enable-bsf=vp9_metadata
 --enable-bsf=opus_metadata
 --enable-decoder=libvpx_vp9
+--enable-protocol=jsfetch
