@@ -22,3 +22,5 @@
 --enable-bsf=opus_metadata
 --enable-decoder=libvpx_vp9
 --enable-protocol=jsfetch
+--enable-ffmpeg
+--enable-ffprobe
