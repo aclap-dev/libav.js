@@ -3,23 +3,23 @@
   "//version": "The major and minor are our own versioning, while the revision is FFmpeg's major. When updating the version, make sure you update it here, in the Makefile.m4 and Makefile, and in the README.",
   "version": "6.5.7",
   "description": "A compilation of the libraries associated with handling audio and video in ffmpeg—libavformat, libavcodec, libavfilter, libavutil and libswresample—for WebAssembly and asm.js, and thus the web.",
-  "main": "dist/libav-default.js",
+  "main": "dist/libav-6.5.7.1-h264-aac-mp3.js",
   "types": "dist/libav.types.d.ts",
   "exports": {
     ".": {
-      "import": "./dist/libav-default.mjs",
+      "import": "./dist/libav-6.5.7.1-h264-aac-mp3.mjs",
       "types": "./dist/libav.types.d.ts",
-      "default": "./dist/libav-default.js"
+      "default": "./dist/libav-6.5.7.1-h264-aac-mp3.js"
     },
     "./default": {
-      "import": "./dist/libav-default.mjs",
+      "import": "./dist/libav-6.5.7.1-h264-aac-mp3.mjs",
       "types": "./dist/libav.types.d.ts",
-      "default": "./dist/libav-default.js"
+      "default": "./dist/libav-6.5.7.1-h264-aac-mp3.js"
     },
     "./default-cli": {
-      "import": "./dist/libav-default-cli.mjs",
+      "import": "./dist/libav-6.5.7.1-h264-aac-mp3-cli.mjs",
       "types": "./dist/libav.types.d.ts",
-      "default": "./dist/libav-default-cli.js"
+      "default": "./dist/libav-6.5.7.1-h264-aac-mp3-cli.js"
     },
     "./opus": {
       "import": "./dist/libav-opus.mjs",
@@ -119,5 +119,12 @@
   "devDependencies": {
     "fast-xml-parser": "^4.5.0",
     "terser": "^5.34.1"
-  }
+  },
+  "module": "dist/libav-6.5.7.1-h264-aac-mp3.mjs",
+  "files": [
+    "dist/libav-6.5.7.1-h264-aac-mp3.mjs",
+    "dist/libav-6.5.7.1-h264-aac-mp3.wasm.mjs",
+    "dist/libav-6.5.7.1-h264-aac-mp3.wasm.wasm",
+    "dist/libav.types.d.ts"
+  ]
 }
