@@ -1,12 +1,15 @@
---enable-protocol=data --enable-protocol=file
+--enable-protocol=data --enable-protocol=file --enable-protocol=jsfetch --enable-protocol=crypto
 --enable-filter=aresample
 --enable-filter=asetnsamples
 --enable-muxer=mp4
 --enable-muxer=matroska
 --enable-demuxer=matroska
 --enable-demuxer=aac
+--enable-demuxer=hls
+--enable-muxer=hls
 --enable-parser=aac
 --enable-decoder=aac
+--enable-decoder=h264
 --enable-parser=h264
 --enable-bsf=h264_metadata
 --enable-bsf=extract_extradata
