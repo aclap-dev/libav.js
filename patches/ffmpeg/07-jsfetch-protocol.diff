@@ -142,7 +142,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,194 @@
+@@ -0,0 +1,237 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -182,6 +182,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +static const AVOption options[] = {
 +    { NULL }
 +};
++
 +#if CONFIG_JSFETCH_PROTOCOL
 +static const AVClass jsfetch_context_class = {
 +    .class_name = "jsfetch",
@@ -193,43 +194,85 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Open a fetch connection (JavaScript side).
 + */
-+EM_JS(int, jsfetch_open_js, (const char *url, char* range_header, bool has_range), {
++EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range), {
 +    return Asyncify.handleAsync(function() {
-+        return Promise.all([]).then(function() {
-+            url = UTF8ToString(url);
-+            var headers = {};
-+            if (has_range) {
-+               var range = range_header ? UTF8ToString(range_header) : undefined;
-+               headers.Range = range;
++      return Promise.all([]).then(function() {
++        url = UTF8ToString(url);
++        var headers = {};
++        if (has_range) {
++          var range = range_header ? UTF8ToString(range_header) : undefined;
++          headers.Range = range;
++        }
++        var fetchUrl = url.startsWith("jsfetch:") ? url.slice(8) : url;
++        
++        // Retry function with exponential backoff
++        function fetchWithRetry(retryCount) {
++          return fetch(fetchUrl, { headers }).then(function(response) {
++            // Check for HTTP errors (4xx/5xx status codes)
++            if (!response.ok) {
++              var error = new Error('HTTP Error: ' + response.status + ' ' + response.statusText);
++              error.status = response.status;
++              error.response = response;
++              throw error;
 +            }
-+            var fetchUrl = url.startsWith("jsfetch:") ? url.slice(8) : url;
-+            return fetch(fetchUrl, { headers });
-+        }).then(function(response) {
-+            if (!Module.libavjsJSFetch)
-+                Module.libavjsJSFetch = {ctr: 1, fetches: {}};
-+            var jsf = Module.libavjsJSFetch;
-+            var idx = jsf.ctr++;
-+            var reader = response.body.getReader();
-+            var jsfo = jsf.fetches[idx] = {
-+                url: url,
-+                response: response,
-+                reader: reader,
-+                next: reader.read().then(function(res) {
-+                    jsfo.buf = res;
-+                }).catch(function(rej) {
-+                    jsfo.rej = rej;
-+                }),
-+                buf: null,
-+                rej: null
-+            };
-+            return idx;
-+        }).catch(function(ex) {
-+            Module.fsThrownError = ex;
-+            console.error(ex);
-+            return -11 /* ECANCELED */;
-+        });
++            return response;
++          }).catch(function(error) {
++            // Retry for all exceptions, but not for status codes < 500
++            if (retryCount < 5) {
++              var shouldRetry = true;
++              console.warn("Caught error", error);
++              // Don't retry for client errors (4xx status codes)
++              // Only check status if it exists (we set it for HTTP errors)
++              if (error.status && error.status >= 400 && error.status < 500) {
++                shouldRetry = false;
++              }
++              
++              if (shouldRetry) {
++                console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
++                            ', retrying in ' + Math.pow(2, retryCount) * 250 + 'ms...', error);
++                
++                // Exponential backoff: [250ms -> 4s]
++                var delay = Math.pow(2, retryCount) * 250;
++                return new Promise(function(resolve) {
++                  setTimeout(resolve, delay);
++                }).then(function() {
++                  return fetchWithRetry(retryCount + 1);
++                });
++              }
++            }
++            
++            // Re-throw error if max retries exceeded or non-retryable error
++            throw error;
++          });
++        }
++        
++        return fetchWithRetry(0);
++      }).then(function(response) {
++        if (!Module.libavjsJSFetch)
++          Module.libavjsJSFetch = {ctr: 1, fetches: {}};
++        var jsf = Module.libavjsJSFetch;
++        var idx = jsf.ctr++;
++        var reader = response.body.getReader();
++        var jsfo = jsf.fetches[idx] = {
++          url: url,
++          response: response,
++          reader: reader,
++          next: reader.read().then(function(res) {
++            jsfo.buf = res;
++          }).catch(function(rej) {
++            jsfo.rej = rej;
++          }),
++          buf: null,
++          rej: null
++        };
++        return idx;
++      }).catch(function(ex) {
++        Module.fsThrownError = ex;
++        console.error('Final fetch error after retries:', ex);
++        return -6 /* EAGAIN */;
++      });
 +    });
-+});
++   });
 +
 +/**
 + * Open a fetch connection.
