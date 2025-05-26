@@ -43,9 +43,9 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
 +    return curr_transcode_pts_ms;
 +}
 +
-+static volatile int curr_total_size_bytes = 0;
-+int ffmpeg_get_total_size_bytes(void);
-+int ffmpeg_get_total_size_bytes()
++static volatile int64_t curr_total_size_bytes = 0;
++int64_t ffmpeg_get_total_size_bytes(void);
++int64_t ffmpeg_get_total_size_bytes()
 +{
 +    return curr_total_size_bytes;
 +}
