@@ -19,60 +19,70 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +++ ffmpeg-6.0.1/libavformat/hls.c
 --- a/libavformat/hls.c
 +++ b/libavformat/hls.c
-@@ -311,6 +311,36 @@ static void free_rendition_list(HLSContext *c)
+@@ -311,6 +311,44 @@ static void free_rendition_list(HLSContext *c)
      c->n_renditions = 0;
  }
  
 +// When the M3U8 contains any absolute URIs - i.e init segment, AES key, or just normal segments,
 +// the jsfetch: protocol needs to be prepended.
-+static int jsfetch_wrap_url(const char *url, char **out_url)
++static int jsfetch_wrap_url(const char *url, char *out_url)
 +{
-+    char *url_fixed = NULL;
++    // Ensure the output buffer is always null-terminated initially
++    // to prevent issues with string functions like strncat.
++    out_url[0] = '\0';
++    size_t url_len = strlen(url);
 +
 +    if (av_strstart(url, "http://", NULL) || av_strstart(url, "https://", NULL)) {
-+        url_fixed = av_malloc(strlen("jsfetch:") + strlen(url) + 1);
-+        if (!url_fixed)
-+            return AVERROR(ENOMEM);
-+        strcpy(url_fixed, "jsfetch:");
-+        strcat(url_fixed, url);
++        const char *prefix = "jsfetch:";
++        size_t prefix_len = strlen(prefix);
++
++        strcpy(out_url, prefix);
++        strcat(out_url, url);
++
 +    } else if (av_strstart(url, "crypto+http://", NULL) || av_strstart(url, "crypto+https://", NULL)) {
-+        const char *url_tail = url + strlen("crypto+");
-+        url_fixed = av_malloc(strlen("crypto+jsfetch:") + strlen(url_tail) + 1);
-+        if (!url_fixed)
-+            return AVERROR(ENOMEM);
-+        strcpy(url_fixed, "crypto+jsfetch:");
-+        strcat(url_fixed, url_tail);
++        const char *base_prefix = "crypto+";
++        size_t base_prefix_len = strlen(base_prefix);
++        const char *jsfetch_prefix = "jsfetch:";
++        size_t jsfetch_prefix_len = strlen(jsfetch_prefix);
++
++        // Calculate the tail of the URL (after "crypto+")
++        const char *url_tail = url + base_prefix_len;
++        size_t url_tail_len = strlen(url_tail);
++
++        strcpy(out_url, base_prefix);
++        strcat(out_url, jsfetch_prefix);
++        strcat(out_url, url_tail);
++
 +    } else {
-+        // No transformation needed; just duplicate original URL
-+        url_fixed = av_strdup(url);
-+        if (!url_fixed)
-+            return AVERROR(ENOMEM);
++        // No transformation needed; just copy original URL
++        strcpy(out_url, url);
 +    }
 +
-+    *out_url = url_fixed;
 +    return 0;
 +}
 +
  static struct playlist *new_playlist(HLSContext *c, const char *url,
                                       const char *base)
  {
-@@ -438,7 +468,14 @@ static struct segment *new_init_section(struct playlist *pls,
+@@ -438,7 +476,16 @@ static struct segment *new_init_section(struct playlist *pls,
              return NULL;
          }
      }
 -    sec->url = av_strdup(ptr);
-+    char *wrapped_url = NULL;
-+    int ret = jsfetch_wrap_url(ptr, &wrapped_url);
++    // Longest is with crypto:jsfetch: prepended
++    char wrapped_url[MAX_URL_SIZE + 15];
++    int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
 +    if (ret < 0) {
-+        sec->url = av_strdup(ptr);
 +        fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
++        av_free(sec);
++        return NULL;
 +    } else {
 +        sec->url = av_strdup(wrapped_url);
 +    }
      if (!sec->url) {
          av_free(sec);
          return NULL;
-@@ -680,6 +717,8 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -680,6 +727,8 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
          is_http = 1;
      } else if (av_strstart(proto_name, "data", NULL)) {
          ;
@@ -81,23 +91,44 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      } else
          return AVERROR_INVALIDDATA;
  
-@@ -981,7 +1020,14 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -956,14 +1005,18 @@ static int parse_playlist(HLSContext *c, const char *url,
+                     AV_WB64(seg->iv + 8, seq);
+                 }
+ 
++                // Longest is with crypto:jsfetch: prepended
++                char wrapped_url[MAX_URL_SIZE + 15];
++
+                 if (key_type != KEY_NONE) {
+                     ff_make_absolute_url(tmp_str, sizeof(tmp_str), url, key);
+-                    if (!tmp_str[0]) {
++                    int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
++                    if (ret < 0) {
+                         ret = AVERROR_INVALIDDATA;
+                         av_free(seg);
+                         goto fail;
+                     }
+-                    seg->key = av_strdup(tmp_str);
++                    seg->key = av_strdup(wrapped_url);
+                     if (!seg->key) {
+                         av_free(seg);
+                         ret = AVERROR(ENOMEM);
+@@ -981,7 +1034,14 @@ static int parse_playlist(HLSContext *c, const char *url,
                      av_free(seg);
                      goto fail;
                  }
 -                seg->url = av_strdup(tmp_str);
-+                char *wrapped_url = NULL;
 +                int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
 +                if (ret < 0) {
-+                    seg->url = av_strdup(tmp_str);
 +                    fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
++                    av_free(seg);
++                    goto fail;
 +                } else {
 +                    seg->url = av_strdup(wrapped_url);
 +                }
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,6 +1340,16 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1294,6 +1354,16 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -114,7 +145,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      }
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
-@@ -1348,14 +1404,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1348,14 +1418,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -138,6 +169,25 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
  cleanup:
      av_dict_free(&opts);
+ Index: ffmpeg-6.0.1/libavformat/url.c
+===================================================================
+--- ffmpeg-6.0.1.orig/libavformat/url.c
++++ ffmpeg-6.0.1/libavformat/url.c
+--- a/libavformat/url.c
++++ b/libavformat/url.c
+@@ -201,6 +201,11 @@ int ff_make_absolute_url2(char *buf, int size, const char *base,
+     int use_base_path, simplify_path = 0, ret;
+     const char *base_separators = "/";
+ 
++    // Adjust base pointer to skip "jsfetch:" if exists
++    if (av_strstart(base, "jsfetch:", NULL)) {
++        base = base + 8; 
++    }
++
+     /* This is tricky.
+        For HTTP, http://server/site/page + ../media/file
+        should resolve into http://server/media/file
+
  Index: ffmpeg-6.0.1/libavformat/jsfetch.c
 ===================================================================
 --- /dev/null
