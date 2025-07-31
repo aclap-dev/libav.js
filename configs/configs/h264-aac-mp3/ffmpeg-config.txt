@@ -6,6 +6,9 @@
 --enable-demuxer=matroska
 --enable-demuxer=aac
 --enable-demuxer=hls
+--enable-demuxer=flv
+--enable-demuxer=dash
+--enable-libxml2
 --enable-muxer=hls
 --enable-parser=aac
 --enable-decoder=aac

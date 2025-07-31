@@ -13,6 +13,122 @@ Index: ffmpeg-6.0.1/libavformat/Makefile
  # external library protocols
  OBJS-$(CONFIG_LIBAMQP_PROTOCOL)          += libamqp.o urldecode.o
  OBJS-$(CONFIG_LIBRIST_PROTOCOL)          += librist.o
+Index: ffmpeg-6.0.1/libavformat/dashdec.c
+===================================================================
+--- ffmpeg-6.0.1.orig/libavformat/dashdec.c
++++ ffmpeg-6.0.1/libavformat/dashdec.c
+--- a/libavformat/dashdec.c
++++ b/libavformat/dashdec.c
+@@ -401,6 +401,42 @@ static void free_subtitle_list(DASHContext *c)
+     c->n_subtitles = 0;
+ }
+ 
++static int jsfetch_wrap_url(const char *url, char *out_url)
++{
++    // Ensure the output buffer is always null-terminated initially
++    // to prevent issues with string functions like strncat.
++    out_url[0] = '\0';
++    size_t url_len = strlen(url);
++
++    if (av_strstart(url, "http://", NULL) || av_strstart(url, "https://", NULL)) {
++        const char *prefix = "jsfetch:";
++        size_t prefix_len = strlen(prefix);
++
++        strcpy(out_url, prefix);
++        strcat(out_url, url);
++
++    } else if (av_strstart(url, "crypto+http://", NULL) || av_strstart(url, "crypto+https://", NULL)) {
++        const char *base_prefix = "crypto+";
++        size_t base_prefix_len = strlen(base_prefix);
++        const char *jsfetch_prefix = "jsfetch:";
++        size_t jsfetch_prefix_len = strlen(jsfetch_prefix);
++
++        // Calculate the tail of the URL (after "crypto+")
++        const char *url_tail = url + base_prefix_len;
++        size_t url_tail_len = strlen(url_tail);
++
++        strcpy(out_url, base_prefix);
++        strcat(out_url, jsfetch_prefix);
++        strcat(out_url, url_tail);
++
++    } else {
++        // No transformation needed; just copy original URL
++        strcpy(out_url, url);
++    }
++
++    return 0;
++}
++
+ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+                     AVDictionary **opts, AVDictionary *opts2, int *is_http)
+ {
+@@ -418,6 +454,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+     if (!proto_name)
+         proto_name = avio_find_protocol_name(url);
+ 
++    av_log(NULL, AV_LOG_DEBUG, url);
++    av_log(NULL, AV_LOG_DEBUG, proto_name);
++
+     if (!proto_name)
+         return AVERROR_INVALIDDATA;
+ 
+@@ -433,6 +472,8 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+         }
+     } else if (av_strstart(proto_name, "http", NULL)) {
+         ;
++    } else if (av_strstart(proto_name, "jsfetch", NULL)) {
++        ;
+     } else
+         return AVERROR_INVALIDDATA;
+ 
+@@ -515,8 +556,17 @@ static char *get_content_url(xmlNodePtr *baseurl_nodes,
+         }
+     }
+ end:
+-    av_free(tmp_str);
+-    return url;
++    // Longest is with crypto:jsfetch: prepended
++    char wrapped_url[MAX_URL_SIZE + 15];
++    int ret = jsfetch_wrap_url(url, wrapped_url);
++    if (ret < 0) {
++        fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
++       return NULL;
++    }
++    av_free(url);
++    return av_strdup(wrapped_url);
++    // av_free(tmp_str);
++    // return url;
+ }
+ 
+ static char *get_val_from_nodes_tab(xmlNodePtr *nodes, const int n_nodes, const char *attrname)
+@@ -1687,7 +1737,12 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+     char *url = NULL;
+     int ret = 0;
+ 
++    // Longest is with crypto:jsfetch: prepended
++    // Can't put it later due to goto.
++    char wrapped_url[MAX_URL_SIZE + 15];
++
+     url = av_mallocz(c->max_url_size);
++
+     if (!url) {
+         ret = AVERROR(ENOMEM);
+         goto cleanup;
+@@ -1701,6 +1756,14 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+     }
+ 
+     ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
++    ret = jsfetch_wrap_url(url, wrapped_url);
++    if (ret < 0) {
++        fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
++        goto cleanup;
++    } else {
++        av_free(url);
++        url = av_strdup(wrapped_url);
++    }
+     av_log(pls->parent, AV_LOG_VERBOSE, "DASH request for url '%s', offset %"PRId64"\n",
+            url, seg->url_offset);
+     ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);
 Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- ffmpeg-6.0.1.orig/libavformat/hls.c
@@ -71,7 +187,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 -    sec->url = av_strdup(ptr);
 +    // Longest is with crypto:jsfetch: prepended
 +    char wrapped_url[MAX_URL_SIZE + 15];
-+    int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
++    int ret = jsfetch_wrap_url(tmp_str, wrapped_url);
 +    if (ret < 0) {
 +        fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
 +        av_free(sec);
@@ -101,7 +217,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (key_type != KEY_NONE) {
                      ff_make_absolute_url(tmp_str, sizeof(tmp_str), url, key);
 -                    if (!tmp_str[0]) {
-+                    int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
++                    int ret = jsfetch_wrap_url(tmp_str, wrapped_url);
 +                    if (ret < 0) {
                          ret = AVERROR_INVALIDDATA;
                          av_free(seg);
@@ -117,7 +233,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                      goto fail;
                  }
 -                seg->url = av_strdup(tmp_str);
-+                int ret = jsfetch_wrap_url(tmp_str, &wrapped_url);
++                int ret = jsfetch_wrap_url(tmp_str, wrapped_url);
 +                if (ret < 0) {
 +                    fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
 +                    av_free(seg);
