@@ -4,3 +4,5 @@ build/ffmpeg-$(FFMPEG_VERSION)/build-base-h264-aac-mp3/ffbuild/config.mak: build
 build/ffmpeg-$(FFMPEG_VERSION)/build-thr-h264-aac-mp3/ffbuild/config.mak: build/inst/thr/lib/libmp3lame.a
 build/ffmpeg-$(FFMPEG_VERSION)/build-base-h264-aac-mp3/ffbuild/config.mak: build/inst/base/lib/pkgconfig/vpx.pc
 build/ffmpeg-$(FFMPEG_VERSION)/build-thr-h264-aac-mp3/ffbuild/config.mak: build/inst/thr/lib/pkgconfig/vpx.pc
+build/ffmpeg-$(FFMPEG_VERSION)/build-base-h264-aac-mp3/ffbuild/config.mak: build/inst/base/lib/pkgconfig/libxml-2.0.pc
+build/ffmpeg-$(FFMPEG_VERSION)/build-thr-h264-aac-mp3/ffbuild/config.mak: build/inst/thr/lib/pkgconfig/libxml-2.0.pc
