@@ -308,7 +308,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,234 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -348,7 +348,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +static const AVOption options[] = {
 +    { NULL }
 +};
-+//#define CONFIG_JSFETCH_PROTOCOL 1
++#define CONFIG_JSFETCH_PROTOCOL 1
 +#if CONFIG_JSFETCH_PROTOCOL
 +static const AVClass jsfetch_context_class = {
 +    .class_name = "jsfetch",
@@ -385,37 +385,23 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +          }).catch(function(error) {
 +            // Retry for all exceptions, but not for status codes < 500 or 404
 +            if (retryCount < 5) {
-+              var shouldRetry = true;
 +              console.warn("Caught error", error);
++              console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
++                          ', retrying in ' + Math.pow(2, retryCount) + 's...', error);
 +              
-+              // Don't retry for client errors (4xx status codes)
-+              // Only check status if it exists (we set it for HTTP errors)
-+              if (error.status && error.status >= 400 && error.status < 500) {
-+                shouldRetry = false;
-+              }
-+              
-+              if (shouldRetry) {
-+                console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
-+                            ', retrying in ' + Math.pow(2, retryCount) + 's...', error);
-+                
-+                // Exponential backoff: [250ms -> 4s]
-+                var delay = Math.pow(2, retryCount) * 250;
-+                return new Promise(function(resolve) {
-+                  setTimeout(resolve, delay);
-+                }).then(function() {
-+                  return fetchWithRetry(retryCount + 1);
-+                });
-+              }
++              // Exponential backoff: [250ms -> 4s]
++              var delay = Math.pow(2, retryCount) * 250;
++              return new Promise(function(resolve) {
++                setTimeout(resolve, delay);
++              }).then(function() {
++                return fetchWithRetry(retryCount + 1);
++              });
 +            }
 +            
 +            // For dash, ffmpeg keeps going past the last segment for some reason
-+            // that happens even on ffmpeg-cli
-+            if (error.status != 404) {
-+              // Re-throw error if max retries exceeded or non-retryable error
-+              throw error;
-+            } else {
-+             return error;
-+           }
++            // that happens even on ffmpeg-cli. It will be a 404.
++            // For other errors, lets try to return a partial download.
++            return error;
 +          });
 +        }
 +        
@@ -423,7 +409,8 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +      }).then(function(response) {
 +        if (!Module.libavjsJSFetch)
 +          Module.libavjsJSFetch = {ctr: 1, fetches: {}};
-+        if (response.status == 404) {
++        if (response instanceof Error) {
++          // Should return a partial file if we've downloaded anything so far.
 +          return -0x20464f45 /* AVERROR_EOF */;
 +        }
 +        var jsf = Module.libavjsJSFetch;
