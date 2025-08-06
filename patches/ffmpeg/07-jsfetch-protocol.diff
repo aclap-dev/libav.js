@@ -92,7 +92,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 +    int ret = jsfetch_wrap_url(url, wrapped_url);
 +    if (ret < 0) {
 +        fprintf(stderr, "Failed to wrap URL: %s\n", av_err2str(ret));
-+       return NULL;
++        return NULL;
 +    }
 +    av_free(url);
 +    return av_strdup(wrapped_url);
@@ -114,7 +114,21 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!url) {
          ret = AVERROR(ENOMEM);
          goto cleanup;
-@@ -1701,6 +1756,14 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -1698,9 +1753,28 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+          * (if this is in fact a HTTP request) */
+         av_dict_set_int(&opts, "offset", seg->url_offset, 0);
+         av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
++
++        // Pre-populate the byte range header if needed. Passed to jsfetch in AVDictionary.
++        char range_header[128] = {0};
++        if (seg->url_offset >= 0 && seg->size > 0) {
++            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-%" PRId64, seg->url_offset, seg->url_offset + seg->size - 1);
++            av_dict_set(&opts, "range_header", range_header, 0);
++        } else if (seg->url_offset >= 0) {
++            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-", seg->url_offset);
++            av_dict_set(&opts, "range_header", range_header, 0);
++        }
++        av_log(NULL, AV_LOG_DEBUG, range_header);
      }
  
      ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
@@ -304,11 +318,22 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
         For HTTP, http://server/site/page + ../media/file
         should resolve into http://server/media/file
 
+ Index: ffmpeg-6.0.1/libavformat/jsfetch.h
+===================================================================
+--- /dev/null
++++ ffmpeg-6.0.1/libavformat/jsfetch.h
+@@ -0,0 +1,6 @@
++#ifndef JSFETCH_H
++#define JSFETCH_H
++
++void jsfetch_abort_request(void);
++
++#endif
  Index: ffmpeg-6.0.1/libavformat/jsfetch.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,271 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -335,6 +360,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +#include "libavutil/opt.h"
 +
 +#include "url.h"
++#include "jsfetch.h"
 +
 +#include <emscripten.h>
 +#include <errno.h>
@@ -357,11 +383,24 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    .version = LIBAVUTIL_VERSION_INT
 +};
 +
++EM_JS(void, jsfetch_abort, (), {
++    var abortController = Module.libavjsJSFetch.abortController;
++    if (abortController) {
++        abortController.abort();
++    }
++});
++
++void jsfetch_abort_request(void) {
++  jsfetch_abort();
++}
++
 +/**
 + * Open a fetch connection (JavaScript side).
 + */
 +EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range), {
 +    return Asyncify.handleAsync(function() {
++      if (!Module.libavjsJSFetch)
++        Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
 +      return Promise.all([]).then(function() {
 +        url = UTF8ToString(url);
 +        var headers = {};
@@ -373,7 +412,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        
 +        // Retry function with exponential backoff
 +        function fetchWithRetry(retryCount) {
-+          return fetch(fetchUrl, { headers }).then(function(response) {
++          return fetch(fetchUrl, { headers, signal: Module.libavjsJSFetch.abortController.signal }).then(function(response) {
 +            // Check for HTTP errors (4xx/5xx status codes)
 +            if (!response.ok) {
 +              var error = new Error('HTTP Error: ' + response.status + ' ' + response.statusText);
@@ -383,18 +422,35 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            }
 +            return response;
 +          }).catch(function(error) {
-+            // Retry for all exceptions, but not for status codes < 500 or 404
-+            if (retryCount < 5) {
-+              console.warn("Caught error", error);
++            // No retry
++            if (error instanceof DOMException && error.name == 'AbortError') {
++              return error;
++            }
++
++            console.warn("Caught error", error);
++            var shouldRetry = error.status; //&& error.status >= 500;
++
++            // Retry for all exceptions, and 5xx.
++            if (shouldRetry && retryCount < 5) {
 +              console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
-+                          ', retrying in ' + Math.pow(2, retryCount) + 's...', error);
++                          ', retrying in ' + Math.pow(2, retryCount) * 250 + 'ms...', error);
 +              
 +              // Exponential backoff: [250ms -> 4s]
 +              var delay = Math.pow(2, retryCount) * 250;
 +              return new Promise(function(resolve) {
-+                setTimeout(resolve, delay);
++                let timeoutId = setTimeout(resolve, delay);
++                Module.libavjsJSFetch.abortController.signal.addEventListener('abort', () => {
++                  clearTimeout(timeoutId);
++                  resolve();
++                  error.aborted = true
++                });
++
 +              }).then(function() {
-+                return fetchWithRetry(retryCount + 1);
++                if (error.aborted) {
++                  return error;
++                } else {
++                  return fetchWithRetry(retryCount + 1);
++                }
 +              });
 +            }
 +            
@@ -407,8 +463,9 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        
 +        return fetchWithRetry(0);
 +      }).then(function(response) {
-+        if (!Module.libavjsJSFetch)
-+          Module.libavjsJSFetch = {ctr: 1, fetches: {}};
++        if (response.name == 'AbortError' || response.aborted) {
++          return -0x54584945; /* AVERROR_EXIT*/
++        }
 +        if (response instanceof Error) {
 +          // Should return a partial file if we've downloaded anything so far.
 +          return -0x20464f45 /* AVERROR_EOF */;
@@ -449,6 +506,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    const char *range_ptr = entry ? entry->value : NULL;
 +    bool has_range = range_ptr != NULL;
 +    ctx->idx = jsfetch_open_js(url, range_ptr, has_range);
++
 +    return (ctx->idx > 0) ? 0 : ctx->idx;
 +}
 +
@@ -486,6 +544,10 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +                    jsfo.rej = rej;
 +                });
 +                return ret;
++            }
++
++            if (rej.name == 'AbortError') {
++              return -0x54584945; /* AVERROR_EXIT*/
 +            }
 +
 +            // Otherwise, there was an error
