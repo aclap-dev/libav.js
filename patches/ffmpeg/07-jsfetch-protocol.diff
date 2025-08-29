@@ -114,7 +114,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!url) {
          ret = AVERROR(ENOMEM);
          goto cleanup;
-@@ -1698,9 +1753,28 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -1698,9 +1753,31 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -128,6 +128,9 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 +            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-", seg->url_offset);
 +            av_dict_set(&opts, "range_header", range_header, 0);
 +        }
++        // Custom value used by us in jsfetch to prevent unnecessary seeking.
++        av_dict_set_int(&opts, "skip_seek", 1, 0);
++        
 +        av_log(NULL, AV_LOG_DEBUG, range_header);
      }
  
@@ -258,7 +261,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,6 +1354,16 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1294,6 +1354,19 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -272,10 +275,13 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-", seg->url_offset);
 +            av_dict_set(&opts, "range_header", range_header, 0);
 +        }
++
++        // Custom value used by us in jsfetch to prevent unnecessary seeking.
++        av_dict_set_int(&opts, "skip_seek", 1, 0);
      }
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
-@@ -1348,14 +1418,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1348,14 +1421,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -333,7 +339,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,390 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -397,7 +403,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Open a fetch connection (JavaScript side).
 + */
-+EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range), {
++EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx), {
 +    return Asyncify.handleAsync(function() {
 +      if (!Module.libavjsJSFetch)
 +        Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
@@ -428,7 +434,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            }
 +
 +            console.warn("Caught error", error);
-+            var shouldRetry = error.status; //&& error.status >= 500;
++            var shouldRetry = error.status && (error.status >= 500 || error.status == 429 || error.status == 408);
 +
 +            // Retry for all exceptions, and 5xx.
 +            if (shouldRetry && retryCount < 5) {
@@ -471,7 +477,21 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +          return -0x20464f45 /* AVERROR_EOF */;
 +        }
 +        var jsf = Module.libavjsJSFetch;
-+        var idx = jsf.ctr++;
++
++        const accept_range = (response.headers.get("accept-ranges") || "").toLowerCase();
++        const support_range = accept_range && accept_range == "bytes";
++        const content_length = parseInt(response.headers.get("content-length") || "0", 10);
++
++        if (!jsf.support_range) {
++          jsf.support_range = support_range;
++        }
++
++        // This could be a range request, so don't overwrite.
++        if (!jsf.content_length) {
++          jsf.content_length = content_length;
++        }
++
++        var idx = force_idx ? force_idx : jsf.ctr++;
 +        var reader = response.body.getReader();
 +        var jsfo = jsf.fetches[idx] = {
 +          url: url,
@@ -495,17 +515,65 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +   });
 +
 +/**
++ * Check byte range support
++ */
++EM_JS(int, jsfetch_support_range_js, (), {
++  var jsf = Module.libavjsJSFetch;
++  var ret = jsf.support_range ? 1 : 0;
++  return ret;
++});
++
++/**
++ * Check size
++ */
++EM_JS(int, jsfetch_get_size_js, (), {
++  var jsf = Module.libavjsJSFetch;
++  var size = jsf.content_length ? jsf.content_length : 0;
++
++  return size;
++});
++
++/**
++ * Get curr position
++ */
++EM_JS(int, jsfetch_get_pos_js, (), {
++  var jsf = Module.libavjsJSFetch;
++  var pos = jsf.pos ? jsf.pos : 0;
++  return pos;
++});
++
++/**
++ * Set curr position
++ */
++EM_JS(void, jsfetch_set_pos_js, (int pos), {
++  var jsf = Module.libavjsJSFetch;
++  jsf.pos = pos;
++});
++
++/**
 + * Open a fetch connection.
 + */
 +static int jsfetch_open(URLContext *h, const char *url, int flags, AVDictionary **options)
 +{
 +    JSFetchContext *ctx = h->priv_data;
-+    h->is_streamed = 1;
 +
 +    AVDictionaryEntry *entry = av_dict_get(*options, "range_header", NULL, 0);
 +    const char *range_ptr = entry ? entry->value : NULL;
 +    bool has_range = range_ptr != NULL;
-+    ctx->idx = jsfetch_open_js(url, range_ptr, has_range);
++    ctx->idx = jsfetch_open_js(url, range_ptr, has_range, 0);
++
++    // Check for our special header to indicate this is M3U8/DASH and should not seek.
++    // Those formats can seek within the playlist, but not within an individual segment.
++    entry = av_dict_get(*options, "skip_seek", NULL, 0);
++
++   if (entry || has_range) {
++       // Don't seek.
++       h->is_streamed = 1;
++   } else {
++       // Seek if range header is supported.
++       int support = jsfetch_support_range_js();
++       h->is_streamed = (bool) !support;
++   }
 +
 +    return (ctx->idx > 0) ? 0 : ctx->idx;
 +}
@@ -515,6 +583,10 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + */
 +EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
 +    var jsfo = Module.libavjsJSFetch.fetches[idx];
++    if (!jsfo) {
++      console.warn("Null jsfo. Probably aborted.");
++      return -0x54584945; /* AVERROR_EXIT*/
++    }
 +    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
 +        if (jsfo.buf || jsfo.rej) {
 +            // Already have data
@@ -594,11 +666,64 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    return 0;
 +}
 +
++static int64_t jsfetch_seek(URLContext *h, int64_t pos, int whence)
++{
++    av_log(h, AV_LOG_DEBUG, "[jsfetch] Seeking to pos=%" PRId64 ", whence=%d, url=%s\n",
++           pos, whence, h->filename);
++
++    JSFetchContext *ctx = h->priv_data;
++
++     // AVSEEK_SIZE - should return the size
++    int size = jsfetch_get_size_js();
++    if (whence == 0x10000) {
++      return size ? size : -38;// AVERROR(ENOSYS)
++    }
++
++    // SEEK_CUR: Seek to curr + pos. Very unlikely.
++    if (whence == 1) {
++      int curr_pos = jsfetch_get_pos_js();
++      pos += curr_pos;
++    }
++
++    // SEEK_END: Seek to end of stream + pos.
++    // Usually pos is -1.
++    if (whence == 2) {
++      int size = jsfetch_get_size_js();
++      pos += size;
++    }
++
++    // In case SEEK_CUR is called later.
++    jsfetch_set_pos_js(pos);
++
++    int ret = jsfetch_close(h);
++    if (ret < 0) {
++        av_log(h, AV_LOG_ERROR, "[jsfetch] jsfetch_close failed with error %d\n", ret);
++        return ret;
++    }
++    int has_range = (pos >= 0);
++    char range_header_buf[128];
++    char *range_header = NULL;
++    if (has_range) {
++        // "bytes=<start>-"
++        snprintf(range_header_buf, sizeof(range_header_buf), "bytes=%" PRId64 "-", pos);
++        range_header = range_header_buf;
++    }
++
++    // Force the same idx
++    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx);
++    if (ret < 0) {
++      return ret;
++    }
++
++    return pos;
++}
++
 +const URLProtocol ff_jsfetch_protocol = {
 +    .name               = "jsfetch",
 +    .url_open2          = jsfetch_open,
 +    .url_read           = jsfetch_read,
 +    .url_close          = jsfetch_close,
++    .url_seek           = jsfetch_seek,
 +    .priv_data_size     = sizeof(JSFetchContext),
 +    .priv_data_class    = &jsfetch_context_class,
 +    .flags              = URL_PROTOCOL_FLAG_NETWORK,

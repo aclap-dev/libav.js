@@ -11,3 +11,24 @@ tests/out.webm
 tests/out.mp4
 
 node_modules/
+
+dist/libav-6.5.7.1-h264-aac-mp3.asm.js
+dist/libav-6.5.7.1-h264-aac-mp3.asm.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.asm.js
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.asm.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.js
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.thr.js
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.thr.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.thr.wasm
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.thr.wasm.map
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.wasm.js
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.wasm.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.wasm.wasm
+dist/libav-6.5.7.1-h264-aac-mp3.dbg.wasm.wasm.map
+dist/libav-6.5.7.1-h264-aac-mp3.wasm.wasm.map
+dist/libav-6.5.7.1-h264-aac-mp3.js
+dist/libav-6.5.7.1-h264-aac-mp3.thr.js
+dist/libav-6.5.7.1-h264-aac-mp3.thr.mjs
+dist/libav-6.5.7.1-h264-aac-mp3.thr.wasm
+dist/libav-6.5.7.1-h264-aac-mp3.wasm.js
