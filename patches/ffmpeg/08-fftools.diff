@@ -44,8 +44,8 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
 +}
 +
 +static volatile int64_t curr_total_size_bytes = 0;
-+int64_t ffmpeg_get_total_size_bytes(void);
-+int64_t ffmpeg_get_total_size_bytes()
++double ffmpeg_get_total_size_bytes(void);
++double ffmpeg_get_total_size_bytes()
 +{
 +    return curr_total_size_bytes;
 +}
@@ -57,7 +57,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      if (total_size < 0) av_bprintf(&buf_script, "total_size=N/A\n");
      else                av_bprintf(&buf_script, "total_size=%"PRId64"\n", total_size);
 +    if (total_size > 0) {
-+        curr_total_size_bytes = total_size;
++        curr_total_size_bytes = (double) total_size;
 +    }
      if (pts == AV_NOPTS_VALUE) {
          av_bprintf(&buf_script, "out_time_us=N/A\n");
