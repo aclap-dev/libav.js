@@ -20,6 +20,7 @@ build/libvpx-$(LIBVPX_VERSION)/build-%/Makefile: build/libvpx-$(LIBVPX_VERSION)/
 			--target=generic-gnu \
 			--extra-cflags="-Oz `cat $(PWD)/build/inst/$*/cflags.txt`" \
 			--enable-static --disable-shared \
+			--enable-vp9-highbitdepth \
 			--disable-webm-io \
 			--disable-examples --disable-tools --disable-docs
 	sed 's/^.* cfg = ".*/static const char* const cfg = "";/' < build/libvpx-$(LIBVPX_VERSION)/build-$*/vpx_config.c > build/libvpx-$(LIBVPX_VERSION)/build-$*/vpx_config.c.tmp

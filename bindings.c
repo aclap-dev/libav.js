@@ -492,7 +492,7 @@ int libavjs_with_cli() {
 }
 
 #ifndef LIBAVJS_WITH_CLI
-static int64_t ffmpeg_get_total_size_bytes() { return 0; }
+static double ffmpeg_get_total_size_bytes() { return 0; }
 static int ffmpeg_get_out_time_ms() { return 0; }
 static void ffmpeg_interrupt() {  }
 int ffmpeg_main() { return 0; }

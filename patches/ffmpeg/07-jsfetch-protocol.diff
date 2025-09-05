@@ -339,7 +339,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,390 @@
+@@ -0,0 +1,395 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -526,7 +526,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Check size
 + */
-+EM_JS(int, jsfetch_get_size_js, (), {
++EM_JS(double, jsfetch_get_size_js, (), {
 +  var jsf = Module.libavjsJSFetch;
 +  var size = jsf.content_length ? jsf.content_length : 0;
 +
@@ -536,7 +536,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Get curr position
 + */
-+EM_JS(int, jsfetch_get_pos_js, (), {
++EM_JS(double, jsfetch_get_pos_js, (), {
 +  var jsf = Module.libavjsJSFetch;
 +  var pos = jsf.pos ? jsf.pos : 0;
 +  return pos;
@@ -545,7 +545,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Set curr position
 + */
-+EM_JS(void, jsfetch_set_pos_js, (int pos), {
++EM_JS(void, jsfetch_set_pos_js, (double pos), {
 +  var jsf = Module.libavjsJSFetch;
 +  jsf.pos = pos;
 +});
@@ -666,6 +666,11 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    return 0;
 +}
 +
++// Note: Use double for size/pos. Otherwise we can overflow.
++// Works up to 2^53 bytes ~ 9PB, so should be fine.
++// EM_JS can't handle int64_t without the -sWASM_BIGINT build flag. 
++// Building with it might mess up ffmpeg function bindings that do int64_t => {lo, hi} conversion.
++// https://emscripten.org/docs/getting_started/FAQ.html#how-do-i-pass-int64-t-and-uint64-t-values-from-js-into-wasm-functions
 +static int64_t jsfetch_seek(URLContext *h, int64_t pos, int whence)
 +{
 +    av_log(h, AV_LOG_DEBUG, "[jsfetch] Seeking to pos=%" PRId64 ", whence=%d, url=%s\n",
@@ -674,26 +679,26 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    JSFetchContext *ctx = h->priv_data;
 +
 +     // AVSEEK_SIZE - should return the size
-+    int size = jsfetch_get_size_js();
++    int64_t size = (double) jsfetch_get_size_js();
 +    if (whence == 0x10000) {
 +      return size ? size : -38;// AVERROR(ENOSYS)
 +    }
 +
 +    // SEEK_CUR: Seek to curr + pos. Very unlikely.
 +    if (whence == 1) {
-+      int curr_pos = jsfetch_get_pos_js();
-+      pos += curr_pos;
++      double curr_pos = jsfetch_get_pos_js();
++      pos += (int64_t) curr_pos;
 +    }
 +
 +    // SEEK_END: Seek to end of stream + pos.
 +    // Usually pos is -1.
 +    if (whence == 2) {
-+      int size = jsfetch_get_size_js();
-+      pos += size;
++      double size = jsfetch_get_size_js();
++      pos += (int64_t) size;
 +    }
 +
 +    // In case SEEK_CUR is called later.
-+    jsfetch_set_pos_js(pos);
++    jsfetch_set_pos_js((double) pos);
 +
 +    int ret = jsfetch_close(h);
 +    if (ret < 0) {
