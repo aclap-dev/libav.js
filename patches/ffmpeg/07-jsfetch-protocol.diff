@@ -128,11 +128,11 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 +            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-", seg->url_offset);
 +            av_dict_set(&opts, "range_header", range_header, 0);
 +        }
-+        // Custom value used by us in jsfetch to prevent unnecessary seeking.
-+        av_dict_set_int(&opts, "skip_seek", 1, 0);
 +        
 +        av_log(NULL, AV_LOG_DEBUG, range_header);
      }
++    // Custom value used by us in jsfetch to prevent unnecessary seeking.
++    av_dict_set_int(&opts, "skip_seek", 1, 0);
  
      ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
 +    ret = jsfetch_wrap_url(url, wrapped_url);
@@ -261,10 +261,11 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,6 +1354,19 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1294,7 +1354,19 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
+-    }
 +
 +        // Pre-populate the byte range header if needed. Passed to jsfetch in AVDictionary.
 +        char range_header[128] = {0};
@@ -275,13 +276,13 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            snprintf(range_header, sizeof(range_header), "bytes=%" PRId64 "-", seg->url_offset);
 +            av_dict_set(&opts, "range_header", range_header, 0);
 +        }
-+
-+        // Custom value used by us in jsfetch to prevent unnecessary seeking.
-+        av_dict_set_int(&opts, "skip_seek", 1, 0);
-     }
++      }
++      // Custom value used by us in jsfetch to prevent unnecessary seeking.
++      av_dict_set_int(&opts, "skip_seek", 1, 0);
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
-@@ -1348,14 +1421,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+            seg->url, seg->url_offset, pls->index);
+@@ -1348,14 +1420,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -339,7 +340,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,395 @@
+@@ -0,0 +1,398 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -678,6 +679,9 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +
 +    JSFetchContext *ctx = h->priv_data;
 +
++    if (h->is_streamed) {
++         return AVERROR(ENOSYS); 
++    }
 +     // AVSEEK_SIZE - should return the size
 +    int64_t size = (double) jsfetch_get_size_js();
 +    if (whence == 0x10000) {
