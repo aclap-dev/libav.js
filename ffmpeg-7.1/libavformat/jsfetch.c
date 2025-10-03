@@ -61,7 +61,7 @@ void jsfetch_abort_request(void) {
 /**
  * Open a fetch connection (JavaScript side).
  */
-EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx), {
+EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx, bool enable_retries), {
     return Asyncify.handleAsync(function() {
       if (!Module.libavjsJSFetch)
         Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
@@ -92,10 +92,10 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
             }
 
             console.warn("Caught error", error);
-            var shouldRetry = error.status && (error.status >= 500 || error.status == 429 || error.status == 408);
+            var shouldRetry = !error.status || (error.status && (error.status >= 500 || error.status == 429 || error.status == 408));
 
             // Retry for all exceptions, and 5xx.
-            if (shouldRetry && retryCount < 5) {
+            if (enable_retries && shouldRetry && retryCount < 5) {
               console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
                           ', retrying in ' + Math.pow(2, retryCount) * 250 + 'ms...', error);
               
@@ -218,13 +218,16 @@ static int jsfetch_open(URLContext *h, const char *url, int flags, AVDictionary 
     AVDictionaryEntry *entry = av_dict_get(*options, "range_header", NULL, 0);
     const char *range_ptr = entry ? entry->value : NULL;
     bool has_range = range_ptr != NULL;
-    ctx->idx = jsfetch_open_js(url, range_ptr, has_range, 0);
 
-    // Check for our special header to indicate this is M3U8/DASH and should not seek.
-    // Those formats can seek within the playlist, but not within an individual segment.
-    entry = av_dict_get(*options, "skip_seek", NULL, 0);
+    // Custom values used by us in jsfetch to prevent unnecessary seeking & retries.
+    entry = av_dict_get(*options, "jsfetch_skip_seek", NULL, 0);
+    bool skip_seek = entry != NULL;
+    entry = av_dict_get(*options, "jsfetch_skip_retry", NULL, 0);
+    bool skip_retries = entry != NULL;
 
-   if (entry || has_range) {
+    ctx->idx = jsfetch_open_js(url, range_ptr, has_range, 0, !skip_retries);
+
+   if (skip_seek || has_range) {
        // Don't seek.
        h->is_streamed = 1;
    } else {
@@ -376,7 +379,7 @@ static int64_t jsfetch_seek(URLContext *h, int64_t pos, int whence)
     }
 
     // Force the same idx
-    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx);
+    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, false);
     if (ret < 0) {
       return ret;
     }

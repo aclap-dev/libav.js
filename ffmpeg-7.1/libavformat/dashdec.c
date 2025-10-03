@@ -1766,8 +1766,8 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
         
         av_log(NULL, AV_LOG_DEBUG, range_header);
     }
-    // Custom value used by us in jsfetch to prevent unnecessary seeking.
-    av_dict_set_int(&opts, "skip_seek", 1, 0);
+    // Custom value used by us in jsfetch to prevent unnecessary seeking
+    av_dict_set_int(&opts, "jsfetch_skip_seek", 1, 0);
 
     ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
     ret = jsfetch_wrap_url(url, wrapped_url);

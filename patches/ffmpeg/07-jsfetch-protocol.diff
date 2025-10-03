@@ -131,8 +131,8 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 +        
 +        av_log(NULL, AV_LOG_DEBUG, range_header);
      }
-+    // Custom value used by us in jsfetch to prevent unnecessary seeking.
-+    av_dict_set_int(&opts, "skip_seek", 1, 0);
++    // Custom value used by us in jsfetch to prevent unnecessary seeking
++    av_dict_set_int(&opts, "jsfetch_skip_seek", 1, 0);
  
      ff_make_absolute_url(url, c->max_url_size, c->base_url, seg->url);
 +    ret = jsfetch_wrap_url(url, wrapped_url);
@@ -261,7 +261,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,7 +1354,19 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1294,7 +1354,21 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -277,12 +277,14 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            av_dict_set(&opts, "range_header", range_header, 0);
 +        }
 +      }
-+      // Custom value used by us in jsfetch to prevent unnecessary seeking.
-+      av_dict_set_int(&opts, "skip_seek", 1, 0);
++    // Custom values used by us in jsfetch to prevent unnecessary seeking & retries.
++    av_dict_set_int(&opts, "jsfetch_skip_seek", 1, 0);
++    // Retry with the built in HLS option `seg_max_retry` instead.
++    av_dict_set_int(&opts, "jsfetch_skip_retry", 1, 0);
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
             seg->url, seg->url_offset, pls->index);
-@@ -1348,14 +1420,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1348,14 +1422,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -306,7 +308,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
  cleanup:
      av_dict_free(&opts);
-@@ -2540,25 +2613,27 @@ static int hls_probe(const AVProbeData *p)
+@@ -2540,25 +2618,27 @@ static int hls_probe(const AVProbeData *p)
          strstr(p->buf, "#EXT-X-TARGETDURATION:") ||
          strstr(p->buf, "#EXT-X-MEDIA-SEQUENCE:")) {
  
@@ -387,7 +389,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,398 @@
+@@ -0,0 +1,401 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -451,7 +453,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +/**
 + * Open a fetch connection (JavaScript side).
 + */
-+EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx), {
++EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx, bool enable_retries), {
 +    return Asyncify.handleAsync(function() {
 +      if (!Module.libavjsJSFetch)
 +        Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
@@ -482,10 +484,10 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +            }
 +
 +            console.warn("Caught error", error);
-+            var shouldRetry = error.status && (error.status >= 500 || error.status == 429 || error.status == 408);
++            var shouldRetry = !error.status || (error.status && (error.status >= 500 || error.status == 429 || error.status == 408));
 +
 +            // Retry for all exceptions, and 5xx.
-+            if (shouldRetry && retryCount < 5) {
++            if (enable_retries && shouldRetry && retryCount < 5) {
 +              console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
 +                          ', retrying in ' + Math.pow(2, retryCount) * 250 + 'ms...', error);
 +              
@@ -608,13 +610,16 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    AVDictionaryEntry *entry = av_dict_get(*options, "range_header", NULL, 0);
 +    const char *range_ptr = entry ? entry->value : NULL;
 +    bool has_range = range_ptr != NULL;
-+    ctx->idx = jsfetch_open_js(url, range_ptr, has_range, 0);
 +
-+    // Check for our special header to indicate this is M3U8/DASH and should not seek.
-+    // Those formats can seek within the playlist, but not within an individual segment.
-+    entry = av_dict_get(*options, "skip_seek", NULL, 0);
++    // Custom values used by us in jsfetch to prevent unnecessary seeking & retries.
++    entry = av_dict_get(*options, "jsfetch_skip_seek", NULL, 0);
++    bool skip_seek = entry != NULL;
++    entry = av_dict_get(*options, "jsfetch_skip_retry", NULL, 0);
++    bool skip_retries = entry != NULL;
 +
-+   if (entry || has_range) {
++    ctx->idx = jsfetch_open_js(url, range_ptr, has_range, 0, !skip_retries);
++
++   if (skip_seek || has_range) {
 +       // Don't seek.
 +       h->is_streamed = 1;
 +   } else {
@@ -766,7 +771,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    }
 +
 +    // Force the same idx
-+    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx);
++    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, false);
 +    if (ret < 0) {
 +      return ret;
 +    }
