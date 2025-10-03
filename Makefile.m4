@@ -31,6 +31,7 @@ EFLAGS=\
 	-s ALLOW_MEMORY_GROWTH=1
 
 # For debugging:
+#EFLAGS += -g
 #EFLAGS+=\
 #	-s ASSERTIONS=2 \
 #	-s STACK_OVERFLOW_CHECK=2 \
