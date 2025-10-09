@@ -19,7 +19,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 +++ ffmpeg-6.0.1/libavformat/dashdec.c
 --- a/libavformat/dashdec.c
 +++ b/libavformat/dashdec.c
-@@ -401,6 +401,42 @@ static void free_subtitle_list(DASHContext *c)
+@@ -401,6 +401,42 @@
      c->n_subtitles = 0;
  }
  
@@ -62,7 +62,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
  static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
                      AVDictionary **opts, AVDictionary *opts2, int *is_http)
  {
-@@ -418,6 +454,9 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -418,6 +454,9 @@
      if (!proto_name)
          proto_name = avio_find_protocol_name(url);
  
@@ -72,7 +72,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!proto_name)
          return AVERROR_INVALIDDATA;
  
-@@ -433,6 +472,8 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -433,6 +472,8 @@
          }
      } else if (av_strstart(proto_name, "http", NULL)) {
          ;
@@ -81,7 +81,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      } else
          return AVERROR_INVALIDDATA;
  
-@@ -515,8 +556,17 @@ static char *get_content_url(xmlNodePtr *baseurl_nodes,
+@@ -515,8 +556,17 @@
          }
      }
  end:
@@ -101,7 +101,20 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
  }
  
  static char *get_val_from_nodes_tab(xmlNodePtr *nodes, const int n_nodes, const char *attrname)
-@@ -1687,7 +1737,12 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -805,8 +855,11 @@
+                 memset(p + 1, 0, strlen(p));
+             }
+             av_strlcat(tmp_str, text + start, tmp_max_url_size);
+-            xmlNodeSetContent(baseurl_nodes[i], tmp_str);
++            // https://trac.ffmpeg.org/ticket/7395
++            xmlChar *escaped = xmlEncodeSpecialChars(NULL, tmp_str);
++            xmlNodeSetContent(baseurl_nodes[i], escaped);
+             updated = 1;
++            xmlFree(escaped);
+             xmlFree(text);
+         }
+     }
+@@ -1687,7 +1740,12 @@
      char *url = NULL;
      int ret = 0;
  
@@ -114,7 +127,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!url) {
          ret = AVERROR(ENOMEM);
          goto cleanup;
-@@ -1698,9 +1753,31 @@ static int open_input(DASHContext *c, struct representation *pls, struct fragmen
+@@ -1698,9 +1756,31 @@
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
