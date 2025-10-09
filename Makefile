@@ -31,7 +31,9 @@ EFLAGS=\
 	-s ALLOW_MEMORY_GROWTH=1
 
 # For debugging:
-#EFLAGS += -g
+# EFLAGS += -g
+# Breakpoint: build/ffmpeg-7.1/build-base-all/src/fftools/ffmpeg.c
+# dist/libav-6.5.7.1-all.dbg.wasm.js runMain: main()
 #EFLAGS+=\
 #	-s ASSERTIONS=2 \
 #	-s STACK_OVERFLOW_CHECK=2 \
