@@ -47,6 +47,7 @@
 #include "url.h"
 
 #include "hls_sample_encryption.h"
+#include <emscripten.h>
 
 #define INITIAL_BUFFER_SIZE 32768
 
@@ -1619,7 +1620,7 @@ reload:
             while (av_gettime_relative() - v->last_load_time < reload_interval) {
                 if (ff_check_interrupt(c->interrupt_callback))
                     return AVERROR_EXIT;
-                av_usleep(100*1000);
+                emscripten_sleep(100);
             }
             /* Enough time has elapsed since the last reload */
             goto reload;

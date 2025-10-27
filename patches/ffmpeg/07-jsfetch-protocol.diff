@@ -163,9 +163,15 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- ffmpeg-6.0.1.orig/libavformat/hls.c
 +++ ffmpeg-6.0.1/libavformat/hls.c
---- a/libavformat/hls.c
-+++ b/libavformat/hls.c
-@@ -311,6 +311,44 @@ static void free_rendition_list(HLSContext *c)
+@@ -47,6 +47,7 @@
+ #include "url.h"
+ 
+ #include "hls_sample_encryption.h"
++#include <emscripten.h>
+ 
+ #define INITIAL_BUFFER_SIZE 32768
+ 
+@@ -311,6 +312,44 @@
      c->n_renditions = 0;
  }
  
@@ -210,7 +216,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  static struct playlist *new_playlist(HLSContext *c, const char *url,
                                       const char *base)
  {
-@@ -438,7 +476,16 @@ static struct segment *new_init_section(struct playlist *pls,
+@@ -438,7 +477,16 @@
              return NULL;
          }
      }
@@ -228,7 +234,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      if (!sec->url) {
          av_free(sec);
          return NULL;
-@@ -680,6 +727,8 @@ static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
+@@ -680,6 +728,8 @@
          is_http = 1;
      } else if (av_strstart(proto_name, "data", NULL)) {
          ;
@@ -237,7 +243,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      } else
          return AVERROR_INVALIDDATA;
  
-@@ -956,14 +1005,18 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -956,14 +1006,18 @@
                      AV_WB64(seg->iv + 8, seq);
                  }
  
@@ -258,7 +264,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                      if (!seg->key) {
                          av_free(seg);
                          ret = AVERROR(ENOMEM);
-@@ -981,7 +1034,14 @@ static int parse_playlist(HLSContext *c, const char *url,
+@@ -981,7 +1035,14 @@
                      av_free(seg);
                      goto fail;
                  }
@@ -274,7 +280,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,7 +1354,21 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1294,7 +1355,21 @@
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -297,7 +303,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
             seg->url, seg->url_offset, pls->index);
-@@ -1348,14 +1422,15 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg,
+@@ -1348,14 +1423,15 @@
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -321,7 +327,16 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
  cleanup:
      av_dict_free(&opts);
-@@ -2540,25 +2618,27 @@ static int hls_probe(const AVProbeData *p)
+@@ -1544,7 +1620,7 @@
+             while (av_gettime_relative() - v->last_load_time < reload_interval) {
+                 if (ff_check_interrupt(c->interrupt_callback))
+                     return AVERROR_EXIT;
+-                av_usleep(100*1000);
++                emscripten_sleep(100);
+             }
+             /* Enough time has elapsed since the last reload */
+             goto reload;
+@@ -2540,25 +2616,27 @@
          strstr(p->buf, "#EXT-X-TARGETDURATION:") ||
          strstr(p->buf, "#EXT-X-MEDIA-SEQUENCE:")) {
  
@@ -402,7 +417,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,458 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -565,6 +580,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +          }).catch(function(rej) {
 +            jsfo.rej = rej;
 +          }),
++          first: true,
 +          buf: null,
 +          rej: null
 +        };
@@ -653,52 +669,108 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +      console.warn("Null jsfo. Probably aborted.");
 +      return -0x54584945; /* AVERROR_EXIT*/
 +    }
-+    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
-+        if (jsfo.buf || jsfo.rej) {
-+            // Already have data
-+            var fromBuf = jsfo.buf;
-+            var rej = jsfo.rej;
++    function FindPngSliceIndex(data) {
++      const png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
++      const iend_chunk = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 +
-+            if (fromBuf) {
-+                if (fromBuf.done) {
-+                    // EOF
-+                    return -0x20464f45 /* AVERROR_EOF */;
-+                }
-+                if (fromBuf.value.length > size) {
-+                    // Return some of the buffer
-+                    Module.HEAPU8.set(fromBuf.value.subarray(0, size), toBuf);
-+                    fromBuf.value = fromBuf.value.subarray(size);
-+                    return size;
-+                }
++      for (let i = 0; i < png_header.length; i++) {
++        if (data[i] !== png_header[i]) {
++          return -1;
++        }
++      }
 +
-+                /* Otherwise, return the remainder of the buffer and start
-+                 * the next read */
-+                var ret = fromBuf.value.length;
-+                Module.HEAPU8.set(fromBuf.value, toBuf);
-+                jsfo.buf = jsfo.rej = null;
-+                jsfo.next = jsfo.reader.read().then(function(res) {
-+                    jsfo.buf = res;
-+                }).catch(function(rej) {
-+                    jsfo.rej = rej;
-+                });
-+                return ret;
-+            }
++      const seq_len = iend_chunk.length;
++      const data_len = data.length;
++      if (seq_len === 0 || seq_len > data_len) {
++        return -1;
++      };
 +
-+            if (rej.name == 'AbortError') {
-+              return -0x54584945; /* AVERROR_EXIT*/
-+            }
++      const first_byte = iend_chunk[0];
 +
-+            // Otherwise, there was an error
-+            Module.fsThrownError = rej;
-+            console.error(rej);
-+            return -11 /* ECANCELED */;
++      for (let i = png_header.length; i <= data_len - seq_len; i++) {
++
++        if (data[i] !== first_byte) {
++          continue;
 +        }
 +
-+        // The next data isn't available yet. Force them to wait.
-+        return Promise.race([
-+            jsfo.next,
-+            new Promise(function(res) { setTimeout(res, 100); })
-+        ]).then(function() { return -6 /* EAGAIN */; });
++        let match = true;
++        for (let j = 1; j < seq_len; j++) {
++          if (data[i + j] !== iend_chunk[j]) {
++            match = false;
++            break;
++          }
++        }
++
++        if (match) {
++          return i;
++        }
++      }
++      return -1;
++    }
++    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
++      if (Module.libavjsJSFetch.abortController.signal.aborted) {
++        return -0x54584945; /* AVERROR_EXIT*/
++      }
++      if (jsfo.buf || jsfo.rej) {
++          // Already have data
++          var fromBuf = jsfo.buf;
++          var rej = jsfo.rej;
++
++          if (fromBuf) {
++              if (fromBuf.done) {
++                  // EOF
++                  return -0x20464f45 /* AVERROR_EOF */;
++              }
++              if (fromBuf.value.length > size) {
++                  // Check for PNG in the first read only.
++                  if (jsfo.first) {
++                    let png_index = FindPngSliceIndex(fromBuf.value);
++                    if (png_index >= 0) {
++                      fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
++                    }
++                  }
++                  // Return some of the buffer
++                  Module.HEAPU8.set(fromBuf.value.subarray(0, size), toBuf);
++                  fromBuf.value = fromBuf.value.subarray(size);
++                  return size;
++              }
++
++              // Check for PNG
++              if (jsfo.first) {
++                let png_index = FindPngSliceIndex(fromBuf.value);
++                if (png_index >= 0) {
++                  fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
++                }
++              }
++
++              /* Otherwise, return the remainder of the buffer and start
++                * the next read */
++              var ret = fromBuf.value.length;
++              Module.HEAPU8.set(fromBuf.value, toBuf);
++              jsfo.buf = jsfo.rej = null;
++              jsfo.next = jsfo.reader.read().then(function(res) {
++                  jsfo.buf = res;
++              }).catch(function(rej) {
++                  jsfo.rej = rej;
++              });
++              return ret;
++          }
++
++          if (rej.name == 'AbortError') {
++            return -0x54584945; /* AVERROR_EXIT*/
++          }
++
++          // Otherwise, there was an error
++          Module.fsThrownError = rej;
++          console.error(rej);
++          return -11 /* ECANCELED */;
++      }
++
++      // The next data isn't available yet. Force them to wait.
++      return Promise.race([
++          jsfo.next,
++          new Promise(function(res) { setTimeout(res, 100); })
++      ]).then(function() { return -6 /* EAGAIN */; });
 +    }); });
 +});
 +
