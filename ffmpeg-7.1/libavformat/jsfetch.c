@@ -48,9 +48,11 @@ static const AVClass jsfetch_context_class = {
 };
 
 EM_JS(void, jsfetch_abort, (), {
-    var abortController = Module.libavjsJSFetch.abortController;
+    var abortController = Module.abortController;
     if (abortController) {
         abortController.abort();
+    } else {
+      Module.abortController = new AbortController()
     }
 });
 
@@ -64,7 +66,10 @@ void jsfetch_abort_request(void) {
 EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx, bool enable_retries), {
     return Asyncify.handleAsync(function() {
       if (!Module.libavjsJSFetch)
-        Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
+        Module.libavjsJSFetch = {ctr: 1, fetches: {}};
+      if (!Module.abortController) {
+        Module.abortController = new AbortController()
+      }
       return Promise.all([]).then(function() {
         url = UTF8ToString(url);
         var headers = {};
@@ -76,7 +81,7 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
         
         // Retry function with exponential backoff
         function fetchWithRetry(retryCount) {
-          return fetch(fetchUrl, { headers, signal: Module.libavjsJSFetch.abortController.signal }).then(function(response) {
+          return fetch(fetchUrl, { headers, signal: Module.abortController.signal }).then(function(response) {
             // Check for HTTP errors (4xx/5xx status codes)
             if (!response.ok) {
               var error = new Error('HTTP Error: ' + response.status + ' ' + response.statusText);
@@ -103,7 +108,7 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
               var delay = Math.pow(2, retryCount) * 250;
               return new Promise(function(resolve) {
                 let timeoutId = setTimeout(resolve, delay);
-                Module.libavjsJSFetch.abortController.signal.addEventListener('abort', () => {
+                Module.abortController.signal.addEventListener('abort', () => {
                   clearTimeout(timeoutId);
                   resolve();
                   error.aborted = true
@@ -160,6 +165,7 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
           }).catch(function(rej) {
             jsfo.rej = rej;
           }),
+          first: true,
           buf: null,
           rej: null
         };
@@ -248,52 +254,108 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
       console.warn("Null jsfo. Probably aborted.");
       return -0x54584945; /* AVERROR_EXIT*/
     }
-    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
-        if (jsfo.buf || jsfo.rej) {
-            // Already have data
-            var fromBuf = jsfo.buf;
-            var rej = jsfo.rej;
+    function FindPngSliceIndex(data) {
+      const png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+      const iend_chunk = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
 
-            if (fromBuf) {
-                if (fromBuf.done) {
-                    // EOF
-                    return -0x20464f45 /* AVERROR_EOF */;
-                }
-                if (fromBuf.value.length > size) {
-                    // Return some of the buffer
-                    Module.HEAPU8.set(fromBuf.value.subarray(0, size), toBuf);
-                    fromBuf.value = fromBuf.value.subarray(size);
-                    return size;
-                }
+      for (let i = 0; i < png_header.length; i++) {
+        if (data[i] !== png_header[i]) {
+          return -1;
+        }
+      }
 
-                /* Otherwise, return the remainder of the buffer and start
-                 * the next read */
-                var ret = fromBuf.value.length;
-                Module.HEAPU8.set(fromBuf.value, toBuf);
-                jsfo.buf = jsfo.rej = null;
-                jsfo.next = jsfo.reader.read().then(function(res) {
-                    jsfo.buf = res;
-                }).catch(function(rej) {
-                    jsfo.rej = rej;
-                });
-                return ret;
-            }
+      const seq_len = iend_chunk.length;
+      const data_len = data.length;
+      if (seq_len === 0 || seq_len > data_len) {
+        return -1;
+      };
 
-            if (rej.name == 'AbortError') {
-              return -0x54584945; /* AVERROR_EXIT*/
-            }
+      const first_byte = iend_chunk[0];
 
-            // Otherwise, there was an error
-            Module.fsThrownError = rej;
-            console.error(rej);
-            return -11 /* ECANCELED */;
+      for (let i = png_header.length; i <= data_len - seq_len; i++) {
+
+        if (data[i] !== first_byte) {
+          continue;
         }
 
-        // The next data isn't available yet. Force them to wait.
-        return Promise.race([
-            jsfo.next,
-            new Promise(function(res) { setTimeout(res, 100); })
-        ]).then(function() { return -6 /* EAGAIN */; });
+        let match = true;
+        for (let j = 1; j < seq_len; j++) {
+          if (data[i + j] !== iend_chunk[j]) {
+            match = false;
+            break;
+          }
+        }
+
+        if (match) {
+          return i;
+        }
+      }
+      return -1;
+    }
+    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
+      if (Module.abortController.signal.aborted) {
+        return -0x54584945; /* AVERROR_EXIT*/
+      }
+      if (jsfo.buf || jsfo.rej) {
+          // Already have data
+          var fromBuf = jsfo.buf;
+          var rej = jsfo.rej;
+
+          if (fromBuf) {
+              if (fromBuf.done) {
+                  // EOF
+                  return -0x20464f45 /* AVERROR_EOF */;
+              }
+              if (fromBuf.value.length > size) {
+                  // Check for PNG in the first read only.
+                  if (jsfo.first) {
+                    let png_index = FindPngSliceIndex(fromBuf.value);
+                    if (png_index >= 0) {
+                      fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
+                    }
+                  }
+                  // Return some of the buffer
+                  Module.HEAPU8.set(fromBuf.value.subarray(0, size), toBuf);
+                  fromBuf.value = fromBuf.value.subarray(size);
+                  return size;
+              }
+
+              // Check for PNG
+              if (jsfo.first) {
+                let png_index = FindPngSliceIndex(fromBuf.value);
+                if (png_index >= 0) {
+                  fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
+                }
+              }
+
+              /* Otherwise, return the remainder of the buffer and start
+                * the next read */
+              var ret = fromBuf.value.length;
+              Module.HEAPU8.set(fromBuf.value, toBuf);
+              jsfo.buf = jsfo.rej = null;
+              jsfo.next = jsfo.reader.read().then(function(res) {
+                  jsfo.buf = res;
+              }).catch(function(rej) {
+                  jsfo.rej = rej;
+              });
+              return ret;
+          }
+
+          if (rej.name == 'AbortError') {
+            return -0x54584945; /* AVERROR_EXIT*/
+          }
+
+          // Otherwise, there was an error
+          Module.fsThrownError = rej;
+          console.error(rej);
+          return -11 /* ECANCELED */;
+      }
+
+      // The next data isn't available yet. Force them to wait.
+      return Promise.race([
+          jsfo.next,
+          new Promise(function(res) { setTimeout(res, 100); })
+      ]).then(function() { return -6 /* EAGAIN */; });
     }); });
 });
 
