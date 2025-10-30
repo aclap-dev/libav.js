@@ -2,7 +2,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
 ===================================================================
 --- ffmpeg-7.1.orig/fftools/ffmpeg.c
 +++ ffmpeg-7.1/fftools/ffmpeg.c
-@@ -316,22 +316,29 @@ static void ffmpeg_cleanup(int ret)
+@@ -316,22 +316,29 @@
      for (int i = 0; i < nb_filtergraphs; i++)
          fg_free(&filtergraphs[i]);
      av_freep(&filtergraphs);
@@ -32,7 +32,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      }
      av_freep(&vstats_filename);
      of_enc_stats_close();
-@@ -544,6 +551,19 @@ void update_benchmark(const char *fmt, ...)
+@@ -544,6 +551,19 @@
          current_time = t;
      }
  }
@@ -52,7 +52,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
  
  static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time, int64_t pts)
  {
-@@ -645,6 +665,9 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -645,6 +665,9 @@
  
      if (total_size < 0) av_bprintf(&buf_script, "total_size=N/A\n");
      else                av_bprintf(&buf_script, "total_size=%"PRId64"\n", total_size);
@@ -62,7 +62,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      if (pts == AV_NOPTS_VALUE) {
          av_bprintf(&buf_script, "out_time_us=N/A\n");
          av_bprintf(&buf_script, "out_time_ms=N/A\n");
-@@ -654,6 +677,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -654,6 +677,7 @@
          av_bprintf(&buf_script, "out_time_ms=%"PRId64"\n", pts);
          av_bprintf(&buf_script, "out_time=%s%02"PRId64":%02d:%02d.%06d\n",
                     hours_sign, hours, mins, secs, us);
@@ -70,7 +70,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      }
  
      if (nb_frames_dup || nb_frames_drop)
-@@ -943,7 +967,21 @@ static int64_t getmaxrss(void)
+@@ -943,7 +967,21 @@
  #endif
  }
  
@@ -92,7 +92,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
  {
      Scheduler *sch = NULL;
  
-@@ -1009,8 +1047,12 @@ finish:
+@@ -1009,8 +1047,24 @@
          ret = 0;
  
      ffmpeg_cleanup(ret);
@@ -101,6 +101,18 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      sch_free(&sch);
  
 +#ifdef __EMSCRIPTEN__
++    int jsfetch_return_code = jsfetch_get_return_code();
++    // Aborted
++    if (ret == 255) {
++        exit(ret);
++    }
++    // There are some code paths that retry, so only return a jsfetch_return_code
++    // if there is a ret code. 
++    // For example, hls.c can retry segment and manifest fetches.
++    // This avoids returning a jsfetch_return_code when we're successful.
++    if (ret && jsfetch_return_code) {
++        exit(jsfetch_return_code);
++    }
 +    exit(ret);
 +#endif
      return ret;

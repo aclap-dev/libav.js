@@ -47,6 +47,22 @@ static const AVClass jsfetch_context_class = {
     .version = LIBAVUTIL_VERSION_INT
 };
 
+/**
+ * Get return code
+ * 
+ * 100-600:  Reserved for HTTP (i.e 403, 500)
+ * 1001:     Network Error
+ * 1002:     Read Error
+ */
+EM_JS(int, jsfetch_get_code, (), {
+  return Module.returnCode || 0;
+});
+
+int jsfetch_get_return_code()
+{
+  return jsfetch_get_code();
+}
+
 EM_JS(void, jsfetch_abort, (), {
     var abortController = Module.abortController;
     if (abortController) {
@@ -136,6 +152,11 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
           return -0x54584945; /* AVERROR_EXIT*/
         }
         if (response instanceof Error) {
+          if (response.status) {
+            Module.returnCode = response.status;
+          } else {
+            Module.returnCode = 1001; /* Network Error*/
+          }
           // Should return a partial file if we've downloaded anything so far.
           return -0x20464f45 /* AVERROR_EOF */;
         }
@@ -346,6 +367,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
           }
 
           // Otherwise, there was an error
+          Module.returnCode = 1002; /* Read Error*/
           Module.fsThrownError = rej;
           console.error(rej);
           return -11 /* ECANCELED */;

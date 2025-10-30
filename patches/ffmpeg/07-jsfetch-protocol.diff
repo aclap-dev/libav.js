@@ -406,18 +406,20 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.h
-@@ -0,0 +1,6 @@
+@@ -0,0 +1,7 @@
 +#ifndef JSFETCH_H
 +#define JSFETCH_H
 +
 +void jsfetch_abort_request(void);
++int jsfetch_get_return_code(void);
 +
 +#endif
+
  Index: ffmpeg-6.0.1/libavformat/jsfetch.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,458 @@
+@@ -0,0 +1,485 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -467,10 +469,28 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    .version = LIBAVUTIL_VERSION_INT
 +};
 +
++/**
++ * Get return code
++ * 
++ * 100-600:  Reserved for HTTP (i.e 403, 500)
++ * 1001:     Network Error
++ * 1002:     Read Error
++ */
++EM_JS(int, jsfetch_get_code, (), {
++  return Module.returnCode || 0;
++});
++
++int jsfetch_get_return_code()
++{
++  return jsfetch_get_code();
++}
++
 +EM_JS(void, jsfetch_abort, (), {
-+    var abortController = Module.libavjsJSFetch.abortController;
++    var abortController = Module.abortController;
 +    if (abortController) {
 +        abortController.abort();
++    } else {
++      Module.abortController = new AbortController()
 +    }
 +});
 +
@@ -484,7 +504,10 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx, bool enable_retries), {
 +    return Asyncify.handleAsync(function() {
 +      if (!Module.libavjsJSFetch)
-+        Module.libavjsJSFetch = {ctr: 1, fetches: {}, abortController: new AbortController()};
++        Module.libavjsJSFetch = {ctr: 1, fetches: {}};
++      if (!Module.abortController) {
++        Module.abortController = new AbortController()
++      }
 +      return Promise.all([]).then(function() {
 +        url = UTF8ToString(url);
 +        var headers = {};
@@ -496,7 +519,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        
 +        // Retry function with exponential backoff
 +        function fetchWithRetry(retryCount) {
-+          return fetch(fetchUrl, { headers, signal: Module.libavjsJSFetch.abortController.signal }).then(function(response) {
++          return fetch(fetchUrl, { headers, signal: Module.abortController.signal }).then(function(response) {
 +            // Check for HTTP errors (4xx/5xx status codes)
 +            if (!response.ok) {
 +              var error = new Error('HTTP Error: ' + response.status + ' ' + response.statusText);
@@ -523,7 +546,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +              var delay = Math.pow(2, retryCount) * 250;
 +              return new Promise(function(resolve) {
 +                let timeoutId = setTimeout(resolve, delay);
-+                Module.libavjsJSFetch.abortController.signal.addEventListener('abort', () => {
++                Module.abortController.signal.addEventListener('abort', () => {
 +                  clearTimeout(timeoutId);
 +                  resolve();
 +                  error.aborted = true
@@ -551,6 +574,11 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +          return -0x54584945; /* AVERROR_EXIT*/
 +        }
 +        if (response instanceof Error) {
++          if (response.status) {
++            Module.returnCode = response.status;
++          } else {
++            Module.returnCode = 1001; /* Network Error*/
++          }
 +          // Should return a partial file if we've downloaded anything so far.
 +          return -0x20464f45 /* AVERROR_EOF */;
 +        }
@@ -708,7 +736,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +      return -1;
 +    }
 +    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
-+      if (Module.libavjsJSFetch.abortController.signal.aborted) {
++      if (Module.abortController.signal.aborted) {
 +        return -0x54584945; /* AVERROR_EXIT*/
 +      }
 +      if (jsfo.buf || jsfo.rej) {
@@ -761,6 +789,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +          }
 +
 +          // Otherwise, there was an error
++          Module.returnCode = 1002; /* Read Error*/
 +          Module.fsThrownError = rej;
 +          console.error(rej);
 +          return -11 /* ECANCELED */;
