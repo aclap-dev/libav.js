@@ -1052,6 +1052,18 @@ finish:
     sch_free(&sch);
 
 #ifdef __EMSCRIPTEN__
+    int jsfetch_return_code = jsfetch_get_return_code();
+    // Aborted
+    if (ret == 255) {
+        exit(ret);
+    }
+    // There are some code paths that retry, so only return a jsfetch_return_code
+    // if there is a ret code. 
+    // For example, hls.c can retry segment and manifest fetches.
+    // This avoids returning a jsfetch_return_code when we're successful.
+    if (ret && jsfetch_return_code) {
+        exit(jsfetch_return_code);
+    }
     exit(ret);
 #endif
     return ret;
