@@ -419,7 +419,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,485 @@
+@@ -0,0 +1,445 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -470,18 +470,36 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +};
 +
 +/**
++ * Initialize functions.
++ * See pre.js for other initialized functions.
++ */
++EM_JS(void, jsfetch_init, (), {
++  if (Module.initialized) {
++    return;
++  }
++  Module.MAX_FETCH_ATTEMPTS = 5;
++  Module.MAX_READ_ATTEMPTS = 5;
++  Module.FETCH_TIMEOUT = 30 * 1000;
++  Module.READ_TIMEOUT = 30 * 1000;
++
++  Module.libavjsJSFetch = { ctr: 1, fetches: {}, pos: 0, read_failures: 0 };
++  Module.abortController = new AbortController();
++  Module.initialized = true;
++});
++
++/**
 + * Get return code
 + * 
 + * 100-600:  Reserved for HTTP (i.e 403, 500)
 + * 1001:     Network Error
 + * 1002:     Read Error
++ * 1003:     Fetch timeout
 + */
 +EM_JS(int, jsfetch_get_code, (), {
 +  return Module.returnCode || 0;
 +});
 +
-+int jsfetch_get_return_code()
-+{
++int jsfetch_get_return_code() {
 +  return jsfetch_get_code();
 +}
 +
@@ -490,7 +508,9 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    if (abortController) {
 +        abortController.abort();
 +    } else {
-+      Module.abortController = new AbortController()
++      // Early-abort any fetches started after this.
++      Module.abortController = new AbortController();
++      Module.abortController.abort();
 +    }
 +});
 +
@@ -500,133 +520,78 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +
 +/**
 + * Open a fetch connection (JavaScript side).
++ * Must return an Asyncify.
 + */
 +EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range, int force_idx, bool enable_retries), {
-+    return Asyncify.handleAsync(function() {
-+      if (!Module.libavjsJSFetch)
-+        Module.libavjsJSFetch = {ctr: 1, fetches: {}};
-+      if (!Module.abortController) {
-+        Module.abortController = new AbortController()
-+      }
-+      return Promise.all([]).then(function() {
-+        url = UTF8ToString(url);
-+        var headers = {};
-+        if (has_range) {
-+          var range = range_header ? UTF8ToString(range_header) : undefined;
-+          headers.Range = range;
-+        }
-+        var fetchUrl = url.startsWith("jsfetch:") ? url.slice(8) : url;
-+        
-+        // Retry function with exponential backoff
-+        function fetchWithRetry(retryCount) {
-+          return fetch(fetchUrl, { headers, signal: Module.abortController.signal }).then(function(response) {
-+            // Check for HTTP errors (4xx/5xx status codes)
-+            if (!response.ok) {
-+              var error = new Error('HTTP Error: ' + response.status + ' ' + response.statusText);
-+              error.status = response.status;
-+              error.response = response;
-+              throw error;
-+            }
-+            return response;
-+          }).catch(function(error) {
-+            // No retry
-+            if (error instanceof DOMException && error.name == 'AbortError') {
-+              return error;
-+            }
++  return Asyncify.handleAsync(async function() {
++    if (Module.abortController.signal.aborted) {
++      console.warn("jsfetch_open_js aborted.");
++      return -0x54584945; /* AVERROR_EXIT*/
++    }    
 +
-+            console.warn("Caught error", error);
-+            var shouldRetry = !error.status || (error.status && (error.status >= 500 || error.status == 429 || error.status == 408));
++    // Headers
++    let headers = {};
++    if (has_range) {
++      const range = range_header ? UTF8ToString(range_header) : undefined;
++      headers.Range = range;
++    }
 +
-+            // Retry for all exceptions, and 5xx.
-+            if (enable_retries && shouldRetry && retryCount < 5) {
-+              console.warn('Fetch attempt ' + (retryCount + 1) + ' failed for ' + fetchUrl + 
-+                          ', retrying in ' + Math.pow(2, retryCount) * 250 + 'ms...', error);
-+              
-+              // Exponential backoff: [250ms -> 4s]
-+              var delay = Math.pow(2, retryCount) * 250;
-+              return new Promise(function(resolve) {
-+                let timeoutId = setTimeout(resolve, delay);
-+                Module.abortController.signal.addEventListener('abort', () => {
-+                  clearTimeout(timeoutId);
-+                  resolve();
-+                  error.aborted = true
-+                });
++    url = UTF8ToString(url);
++    const fetchUrl = url.startsWith("jsfetch:") ? url.slice(8) : url;
++    const attempts = enable_retries ? Module.MAX_FETCH_ATTEMPTS : 1;
++    const response = await FetchWithRetry(fetchUrl, headers, attempts, Module.FETCH_TIMEOUT, Module.abortController.signal);
++    if (response.aborted) {
++      return -0x54584945; /* AVERROR_EXIT*/
++    } else if (response.timeout) {
++      Module.returnCode = 1003; /* Fetch timeout*/
++      // Should return a partial file if we've downloaded anything so far.
++      return -0x20464f45 /* AVERROR_EOF */;
++    } else if (response instanceof Error) {
++      Module.returnCode = 1001; /* Network Error*/
++      return -0x20464f45 /* AVERROR_EOF */;
++    } else if (response.err_status) {
++      Module.returnCode = response.err_status;
++      return -0x20464f45 /* AVERROR_EOF */;
++    }
++    // ..Response is ok
 +
-+              }).then(function() {
-+                if (error.aborted) {
-+                  return error;
-+                } else {
-+                  return fetchWithRetry(retryCount + 1);
-+                }
-+              });
-+            }
-+            
-+            // For dash, ffmpeg keeps going past the last segment for some reason
-+            // that happens even on ffmpeg-cli. It will be a 404.
-+            // For other errors, lets try to return a partial download.
-+            return error;
-+          });
-+        }
-+        
-+        return fetchWithRetry(0);
-+      }).then(function(response) {
-+        if (response.name == 'AbortError' || response.aborted) {
-+          return -0x54584945; /* AVERROR_EXIT*/
-+        }
-+        if (response instanceof Error) {
-+          if (response.status) {
-+            Module.returnCode = response.status;
-+          } else {
-+            Module.returnCode = 1001; /* Network Error*/
-+          }
-+          // Should return a partial file if we've downloaded anything so far.
-+          return -0x20464f45 /* AVERROR_EOF */;
-+        }
-+        var jsf = Module.libavjsJSFetch;
++    const accept_range = (response.headers.get("accept-ranges") || "").toLowerCase();
++    const support_range = accept_range && accept_range == "bytes";
++    const content_length = parseInt(response.headers.get("content-length") || "0", 10);
 +
-+        const accept_range = (response.headers.get("accept-ranges") || "").toLowerCase();
-+        const support_range = accept_range && accept_range == "bytes";
-+        const content_length = parseInt(response.headers.get("content-length") || "0", 10);
++    if (!Module.libavjsJSFetch.support_range) {
++      Module.libavjsJSFetch.support_range = support_range;
++    }
 +
-+        if (!jsf.support_range) {
-+          jsf.support_range = support_range;
-+        }
++    // This could be a range request, so don't overwrite.
++    if (!Module.libavjsJSFetch.content_length) {
++      Module.libavjsJSFetch.content_length = content_length;
++    }
 +
-+        // This could be a range request, so don't overwrite.
-+        if (!jsf.content_length) {
-+          jsf.content_length = content_length;
-+        }
-+
-+        var idx = force_idx ? force_idx : jsf.ctr++;
-+        var reader = response.body.getReader();
-+        var jsfo = jsf.fetches[idx] = {
-+          url: url,
-+          response: response,
-+          reader: reader,
-+          next: reader.read().then(function(res) {
-+            jsfo.buf = res;
-+          }).catch(function(rej) {
-+            jsfo.rej = rej;
-+          }),
-+          first: true,
-+          buf: null,
-+          rej: null
-+        };
-+        return idx;
-+      }).catch(function(ex) {
-+        Module.fsThrownError = ex;
-+        console.error('Final fetch error after retries:', ex);
-+        return -6 /* EAGAIN */;
-+      });
++    const idx = force_idx ? force_idx : Module.libavjsJSFetch.ctr++;
++    const reader = response.body.getReader();
++    Module.abortController.signal.addEventListener('abort', () => {
++      reader.cancel();
 +    });
-+   });
++
++    var jsfo = Module.libavjsJSFetch.fetches[idx] = {
++      url,
++      response,
++      reader,
++      first_read: true,
++      enable_retries,
++      buf: null,
++      rej: null,
++    };
++    return idx;
++  });
++});
 +
 +/**
 + * Check byte range support
 + */
 +EM_JS(int, jsfetch_support_range_js, (), {
-+  var jsf = Module.libavjsJSFetch;
-+  var ret = jsf.support_range ? 1 : 0;
++  var ret = Module.libavjsJSFetch.support_range ? 1 : 0;
 +  return ret;
 +});
 +
@@ -653,8 +618,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + * Set curr position
 + */
 +EM_JS(void, jsfetch_set_pos_js, (double pos), {
-+  var jsf = Module.libavjsJSFetch;
-+  jsf.pos = pos;
++  Module.libavjsJSFetch.pos = pos;
 +});
 +
 +/**
@@ -662,6 +626,8 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + */
 +static int jsfetch_open(URLContext *h, const char *url, int flags, AVDictionary **options)
 +{
++    jsfetch_init();
++
 +    JSFetchContext *ctx = h->priv_data;
 +
 +    AVDictionaryEntry *entry = av_dict_get(*options, "range_header", NULL, 0);
@@ -692,125 +658,92 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + * Read from a fetch connection (JavaScript side).
 + */
 +EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
-+    var jsfo = Module.libavjsJSFetch.fetches[idx];
-+    if (!jsfo) {
-+      console.warn("Null jsfo. Probably aborted.");
-+      return -0x54584945; /* AVERROR_EXIT*/
-+    }
-+    function FindPngSliceIndex(data) {
-+      const png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-+      const iend_chunk = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
-+
-+      for (let i = 0; i < png_header.length; i++) {
-+        if (data[i] !== png_header[i]) {
-+          return -1;
-+        }
-+      }
-+
-+      const seq_len = iend_chunk.length;
-+      const data_len = data.length;
-+      if (seq_len === 0 || seq_len > data_len) {
-+        return -1;
-+      };
-+
-+      const first_byte = iend_chunk[0];
-+
-+      for (let i = png_header.length; i <= data_len - seq_len; i++) {
-+
-+        if (data[i] !== first_byte) {
-+          continue;
-+        }
-+
-+        let match = true;
-+        for (let j = 1; j < seq_len; j++) {
-+          if (data[i + j] !== iend_chunk[j]) {
-+            match = false;
-+            break;
-+          }
-+        }
-+
-+        if (match) {
-+          return i;
-+        }
-+      }
-+      return -1;
-+    }
-+    return Asyncify.handleAsync(function() { return Promise.all([]).then(function() {
-+      if (Module.abortController.signal.aborted) {
++    return Asyncify.handleAsync(async function() {
++      var jsfo = Module.libavjsJSFetch.fetches[idx];
++      if (Module.abortController.signal.aborted || !jsfo) {
++        console.warn("jsfetch_read_js aborted.");
 +        return -0x54584945; /* AVERROR_EXIT*/
 +      }
-+      if (jsfo.buf || jsfo.rej) {
-+          // Already have data
-+          var fromBuf = jsfo.buf;
-+          var rej = jsfo.rej;
++      try {
++        // Check for remainder
++        if (jsfo.buf && jsfo.buf.value && jsfo.buf.value.length > 0) {
++          const chunk = jsfo.buf.value;
++          const len = Math.min(size, chunk.length);
 +
-+          if (fromBuf) {
-+              if (fromBuf.done) {
-+                  // EOF
-+                  return -0x20464f45 /* AVERROR_EOF */;
-+              }
-+              if (fromBuf.value.length > size) {
-+                  // Check for PNG in the first read only.
-+                  if (jsfo.first) {
-+                    let png_index = FindPngSliceIndex(fromBuf.value);
-+                    if (png_index >= 0) {
-+                      fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
-+                    }
-+                  }
-+                  // Return some of the buffer
-+                  Module.HEAPU8.set(fromBuf.value.subarray(0, size), toBuf);
-+                  fromBuf.value = fromBuf.value.subarray(size);
-+                  return size;
-+              }
-+
-+              // Check for PNG
-+              if (jsfo.first) {
-+                let png_index = FindPngSliceIndex(fromBuf.value);
-+                if (png_index >= 0) {
-+                  fromBuf.value = fromBuf.value.subarray(png_index, fromBuf.length);
-+                }
-+              }
-+
-+              /* Otherwise, return the remainder of the buffer and start
-+                * the next read */
-+              var ret = fromBuf.value.length;
-+              Module.HEAPU8.set(fromBuf.value, toBuf);
-+              jsfo.buf = jsfo.rej = null;
-+              jsfo.next = jsfo.reader.read().then(function(res) {
-+                  jsfo.buf = res;
-+              }).catch(function(rej) {
-+                  jsfo.rej = rej;
-+              });
-+              return ret;
++          Module.HEAPU8.set(chunk.subarray(0, len), toBuf);
++          jsfo.buf.value = chunk.subarray(len);
++          if (jsfo.buf.value.length === 0) {
++            jsfo.buf = null;
 +          }
++          Module.libavjsJSFetch.pos += len;
++          return len;
++        }
++        
++        let timeout_p = DoAbortableSleep(Module.READ_TIMEOUT, Module.abortController.signal);
++        let read_p = jsfo.reader.read();
++        const race_res = await Promise.race([timeout_p, read_p]);
++        
++        // Aborted / Timed out
++        if (race_res == "aborted") {
++          return -0x54584945; /* AVERROR_EXIT*/
++        } else if (race_res == "timed_out") {
++          jsfo.reader.cancel();
++          throw `Timed out after ${Module.READ_TIMEOUT} seconds.`;
++        }
 +
-+          if (rej.name == 'AbortError') {
-+            return -0x54584945; /* AVERROR_EXIT*/
++        if (race_res.done) {
++          return -0x20464f45;
++        }
++
++        // Reset read failures
++        Module.libavjsJSFetch.read_failures = 0;
++
++        let chunk = race_res.value;
++        // Check for PNG in the first read only.
++        // Have to assume/hope the PNG is not split across reads.
++        // Otherwise this won't work.
++        if (jsfo.first_read) {
++          let png_index = Module.FindPngSliceIndex(chunk);
++          if (png_index >= 0) {
++            chunk = chunk.subarray(png_index, chunk.length);
 +          }
++          jsfo.first_read = false;
++        }
++        const len = Math.min(size, chunk.length);
++        Module.HEAPU8.set(chunk.subarray(0, len), toBuf);
 +
-+          // Otherwise, there was an error
++        // Save the remainder
++        if (chunk.length > len) {
++          jsfo.buf = {
++            value: chunk.subarray(len)
++          };
++        } else {
++          jsfo.buf = null;
++        }
++        Module.libavjsJSFetch.pos += len;
++
++        return len;
++      } catch (e) {
++        // Cannot retry
++        console.error("jsfetch_read_js error", e);
++        if (!Module.libavjsJSFetch.support_range || !jsfo.enable_retries || Module.libavjsJSFetch.read_failures >= Module.MAX_READ_ATTEMPTS) {
 +          Module.returnCode = 1002; /* Read Error*/
-+          Module.fsThrownError = rej;
-+          console.error(rej);
-+          return -11 /* ECANCELED */;
++          Module.fsThrownError = e;
++          return -11;  /* ECANCELED */;
++        }
++
++        // Signal to retry
++        const delay = Math.pow(2, Module.libavjsJSFetch.read_failures) * 250;
++        console.warn(`Retrying read in ${delay} ms`);
++        const abort_or_timeout = await Module.DoAbortableSleep(delay, Module.abortController.signal);
++        if (abort_or_timeout == "aborted") {
++          return -0x54584945; /* AVERROR_EXIT*/
++        }
++        Module.libavjsJSFetch.read_failures++;
++        return -1000;
 +      }
-+
-+      // The next data isn't available yet. Force them to wait.
-+      return Promise.race([
-+          jsfo.next,
-+          new Promise(function(res) { setTimeout(res, 100); })
-+      ]).then(function() { return -6 /* EAGAIN */; });
-+    }); });
++  });
 +});
-+
-+/**
-+ * Read from a fetch connection.
-+ */
-+static int jsfetch_read(URLContext *h, unsigned char *buf, int size)
-+{
-+    JSFetchContext *ctx = h->priv_data;
-+    return jsfetch_read_js(ctx->idx, buf, size);
-+}
 +
 +/**
 + * Close a fetch connection (JavaScript side).
@@ -818,8 +751,8 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +EM_JS(void, jsfetch_close_js, (int idx), {
 +    var jsfo = Module.libavjsJSFetch.fetches[idx];
 +    if (jsfo) {
-+        try { jsfo.reader.cancel(); } catch (ex) {}
-+        delete Module.libavjsJSFetch.fetches[idx];
++      try { jsfo.reader.cancel(); } catch (ex) {}
++      delete Module.libavjsJSFetch.fetches[idx];
 +    }
 +});
 +
@@ -828,9 +761,9 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + */
 +static int jsfetch_close(URLContext *h)
 +{
-+    JSFetchContext *ctx = h->priv_data;
-+    jsfetch_close_js(ctx->idx);
-+    return 0;
++  JSFetchContext *ctx = h->priv_data;
++  jsfetch_close_js(ctx->idx);
++  return 0;
 +}
 +
 +// Note: Use double for size/pos. Otherwise we can overflow.
@@ -848,7 +781,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    if (h->is_streamed) {
 +         return AVERROR(ENOSYS); 
 +    }
-+     // AVSEEK_SIZE - should return the size
++    // AVSEEK_SIZE - should return the size
 +    int64_t size = (double) jsfetch_get_size_js();
 +    if (whence == 0x10000) {
 +      return size ? size : -38;// AVERROR(ENOSYS)
@@ -885,12 +818,39 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +    }
 +
 +    // Force the same idx
-+    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, false);
++    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, true);
 +    if (ret < 0) {
 +      return ret;
 +    }
 +
 +    return pos;
++}
++
++
++/**
++ * Read from a fetch connection.
++ */
++static int jsfetch_read(URLContext *h, unsigned char *buf, int size)
++{
++    JSFetchContext *ctx = h->priv_data;
++    int ret = jsfetch_read_js(ctx->idx, buf, size);
++    // If retries are not possible / needed.
++    if (ret != -1000) {
++     return ret;
++    }
++
++    /* Retry via seek */
++    // Get pos
++    double curr_pos = jsfetch_get_pos_js();
++    int64_t pos = (int64_t) curr_pos;
++
++    // Seek
++    ret = jsfetch_seek(h, pos, 0);
++    if (ret < 0) {
++     return ret;
++    }
++
++    return jsfetch_read(h, buf, size);
 +}
 +
 +const URLProtocol ff_jsfetch_protocol = {

@@ -973,8 +973,8 @@ static int64_t getmaxrss(void)
 
 void ffmpeg_interrupt(void);
 void ffmpeg_interrupt() {
-    received_nb_signals++;
     jsfetch_abort_request();
+    received_nb_signals++;
 }
 
 int ffmpeg_main(int argc, char **argv);
