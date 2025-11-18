@@ -129,7 +129,9 @@
         ["ffprobe_main", "number", ["number", "number"], {"async": true}],
         ["ffmpeg_interrupt", null, [], {"async": true}],
         ["ffmpeg_get_out_time_ms", "number", [], {"async": true}],
-        ["ffmpeg_get_total_size_bytes", "number", [], {"async": true}]
+        ["ffmpeg_get_total_size_bytes", "number", [], {"async": true}],
+        ["jsfetch_set_read_timeout", null, ["number"]],
+        ["jsfetch_set_fetch_timeout", null, ["number"]]
     ],
 
     "fs": [

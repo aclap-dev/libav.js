@@ -57,13 +57,34 @@ EM_JS(void, jsfetch_init, (), {
   }
   Module.MAX_FETCH_ATTEMPTS = 5;
   Module.MAX_READ_ATTEMPTS = 5;
-  Module.FETCH_TIMEOUT = 30 * 1000;
-  Module.READ_TIMEOUT = 30 * 1000;
+  
+  // Maybe set below during testing.
+  Module.FETCH_TIMEOUT = Module.FETCH_TIMEOUT || 30 * 1000;
+  Module.READ_TIMEOUT = Module.READ_TIMEOUT || 30 * 1000;
 
   Module.libavjsJSFetch = { ctr: 1, fetches: {}, pos: 0, read_failures: 0 };
   Module.abortController = new AbortController();
   Module.initialized = true;
 });
+
+/**
+ * Set timeouts - for testing only.
+ */
+EM_JS(void, jsfetch_set_fetch_timeout_js, (int ms), {
+  Module.FETCH_TIMEOUT = ms;
+});
+
+void jsfetch_set_fetch_timeout(int ms) {
+  return jsfetch_set_fetch_timeout_js(ms);
+}
+
+EM_JS(void, jsfetch_set_read_timeout_js, (int ms), {
+  Module.READ_TIMEOUT = ms;
+});
+
+void jsfetch_set_read_timeout(int ms) {
+  return jsfetch_set_read_timeout_js(ms);
+}
 
 /**
  * Get return code
@@ -242,6 +263,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         console.warn("jsfetch_read_js aborted.");
         return -0x54584945; /* AVERROR_EXIT*/
       }
+      let timed_out = false;
       try {
         // Check for remainder
         if (jsfo.buf && jsfo.buf.value && jsfo.buf.value.length > 0) {
@@ -257,7 +279,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
           return len;
         }
         
-        let timeout_p = DoAbortableSleep(Module.READ_TIMEOUT, Module.abortController.signal);
+        let timeout_p = Module.DoAbortableSleep(Module.READ_TIMEOUT, Module.abortController.signal);
         let read_p = jsfo.reader.read();
         const race_res = await Promise.race([timeout_p, read_p]);
         
@@ -265,8 +287,9 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         if (race_res == "aborted") {
           return -0x54584945; /* AVERROR_EXIT*/
         } else if (race_res == "timed_out") {
+          timed_out = true;
           jsfo.reader.cancel();
-          throw `Timed out after ${Module.READ_TIMEOUT} seconds.`;
+          throw `Timed out after ${Module.READ_TIMEOUT} ms.`;
         }
 
         if (race_res.done) {
@@ -302,11 +325,19 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
 
         return len;
       } catch (e) {
-        // Cannot retry
         console.error("jsfetch_read_js error", e);
+        Module.libavjsJSFetch.read_failures++;
+
+        // Cannot retry
         if (!Module.libavjsJSFetch.support_range || !jsfo.enable_retries || Module.libavjsJSFetch.read_failures >= Module.MAX_READ_ATTEMPTS) {
           Module.returnCode = 1002; /* Read Error*/
-          Module.fsThrownError = e;
+
+          // No need to throw for timeouts - it muddies our error detection.
+          // Only throw for unexpected things.
+          if (!timed_out) {
+            Module.fsThrownError = e;
+          }
+
           return -11;  /* ECANCELED */;
         }
 
@@ -317,7 +348,6 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         if (abort_or_timeout == "aborted") {
           return -0x54584945; /* AVERROR_EXIT*/
         }
-        Module.libavjsJSFetch.read_failures++;
         return -1000;
       }
   });
