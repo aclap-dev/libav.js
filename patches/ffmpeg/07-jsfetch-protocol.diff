@@ -17,9 +17,15 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
 ===================================================================
 --- ffmpeg-6.0.1.orig/libavformat/dashdec.c
 +++ ffmpeg-6.0.1/libavformat/dashdec.c
---- a/libavformat/dashdec.c
-+++ b/libavformat/dashdec.c
-@@ -401,6 +401,42 @@
+@@ -31,6 +31,7 @@
+ #include "dash.h"
+ #include "demux.h"
+ #include "url.h"
++#include "jsfetch.h"
+ 
+ #define INITIAL_BUFFER_SIZE 32768
+ 
+@@ -401,6 +402,42 @@
      c->n_subtitles = 0;
  }
  
@@ -62,7 +68,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
  static int open_url(AVFormatContext *s, AVIOContext **pb, const char *url,
                      AVDictionary **opts, AVDictionary *opts2, int *is_http)
  {
-@@ -418,6 +454,9 @@
+@@ -418,6 +455,9 @@
      if (!proto_name)
          proto_name = avio_find_protocol_name(url);
  
@@ -72,7 +78,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!proto_name)
          return AVERROR_INVALIDDATA;
  
-@@ -433,6 +472,8 @@
+@@ -433,6 +473,8 @@
          }
      } else if (av_strstart(proto_name, "http", NULL)) {
          ;
@@ -81,7 +87,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      } else
          return AVERROR_INVALIDDATA;
  
-@@ -515,8 +556,17 @@
+@@ -515,8 +557,17 @@
          }
      }
  end:
@@ -101,7 +107,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
  }
  
  static char *get_val_from_nodes_tab(xmlNodePtr *nodes, const int n_nodes, const char *attrname)
-@@ -805,8 +855,11 @@
+@@ -805,8 +856,11 @@
                  memset(p + 1, 0, strlen(p));
              }
              av_strlcat(tmp_str, text + start, tmp_max_url_size);
@@ -114,7 +120,16 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
              xmlFree(text);
          }
      }
-@@ -1687,7 +1740,12 @@
+@@ -1590,7 +1644,7 @@
+     struct fragment *seg_ptr = NULL;
+     DASHContext *c = pls->parent->priv_data;
+ 
+-    while (( !ff_check_interrupt(c->interrupt_callback)&& pls->n_fragments > 0)) {
++    while (( !ff_check_interrupt(c->interrupt_callback) && !jsfetch_already_aborted() && pls->n_fragments > 0)) {
+         if (pls->cur_seq_no < pls->n_fragments) {
+             seg_ptr = pls->fragments[pls->cur_seq_no];
+             seg = av_mallocz(sizeof(struct fragment));
+@@ -1687,7 +1741,12 @@
      char *url = NULL;
      int ret = 0;
  
@@ -127,7 +142,7 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      if (!url) {
          ret = AVERROR(ENOMEM);
          goto cleanup;
-@@ -1698,9 +1756,31 @@
+@@ -1698,9 +1757,31 @@
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -159,19 +174,48 @@ Index: ffmpeg-6.0.1/libavformat/dashdec.c
      av_log(pls->parent, AV_LOG_VERBOSE, "DASH request for url '%s', offset %"PRId64"\n",
             url, seg->url_offset);
      ret = open_url(pls->parent, &pls->input, url, &c->avio_opts, opts, NULL);
+@@ -1791,7 +1872,7 @@
+ 
+         ret = open_input(c, v, v->cur_seg);
+         if (ret < 0) {
+-            if (ff_check_interrupt(c->interrupt_callback)) {
++            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted()) {
+                 ret = AVERROR_EXIT;
+                 goto end;
+             }
+@@ -1863,7 +1944,7 @@
+         close_demux_for_component(pls);
+     }
+ 
+-    if (ff_check_interrupt(&s->interrupt_callback)) {
++    if (ff_check_interrupt(&s->interrupt_callback) || jsfetch_already_aborted()) {
+         ret = AVERROR_EXIT;
+         goto fail;
+     }
+@@ -2197,7 +2278,7 @@
+     if (!cur) {
+         return AVERROR_INVALIDDATA;
+     }
+-    while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
++    while (!ff_check_interrupt(c->interrupt_callback) && !jsfetch_already_aborted() && !ret) {
+         ret = av_read_frame(cur->ctx, pkt);
+         if (ret >= 0) {
+             /* If we got a packet, return it */
 Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- ffmpeg-6.0.1.orig/libavformat/hls.c
 +++ ffmpeg-6.0.1/libavformat/hls.c
-@@ -47,6 +47,7 @@
+@@ -47,6 +47,9 @@
  #include "url.h"
  
  #include "hls_sample_encryption.h"
++#include "jsfetch.h"
 +#include <emscripten.h>
++#include <math.h>
  
  #define INITIAL_BUFFER_SIZE 32768
  
-@@ -311,6 +312,44 @@
+@@ -311,6 +314,44 @@
      c->n_renditions = 0;
  }
  
@@ -216,7 +260,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  static struct playlist *new_playlist(HLSContext *c, const char *url,
                                       const char *base)
  {
-@@ -438,7 +477,16 @@
+@@ -438,7 +479,16 @@
              return NULL;
          }
      }
@@ -234,7 +278,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      if (!sec->url) {
          av_free(sec);
          return NULL;
-@@ -680,6 +728,8 @@
+@@ -680,6 +730,8 @@
          is_http = 1;
      } else if (av_strstart(proto_name, "data", NULL)) {
          ;
@@ -243,7 +287,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
      } else
          return AVERROR_INVALIDDATA;
  
-@@ -956,14 +1006,18 @@
+@@ -956,14 +1008,18 @@
                      AV_WB64(seg->iv + 8, seq);
                  }
  
@@ -264,7 +308,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                      if (!seg->key) {
                          av_free(seg);
                          ret = AVERROR(ENOMEM);
-@@ -981,7 +1035,14 @@
+@@ -981,7 +1037,14 @@
                      av_free(seg);
                      goto fail;
                  }
@@ -280,7 +324,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
                  if (!seg->url) {
                      av_free(seg->key);
                      av_free(seg);
-@@ -1294,7 +1355,21 @@
+@@ -1294,7 +1357,21 @@
           * (if this is in fact a HTTP request) */
          av_dict_set_int(&opts, "offset", seg->url_offset, 0);
          av_dict_set_int(&opts, "end_offset", seg->url_offset + seg->size, 0);
@@ -303,7 +347,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
      av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
             seg->url, seg->url_offset, pls->index);
-@@ -1348,14 +1423,15 @@
+@@ -1348,14 +1425,15 @@
       * as would be expected. Wrong offset received from the server will not be
       * noticed without the call, though.
       */
@@ -327,16 +371,49 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
  
  cleanup:
      av_dict_free(&opts);
-@@ -1544,7 +1620,7 @@
+@@ -1542,9 +1620,9 @@
+             if (v->finished)
+                 return AVERROR_EOF;
              while (av_gettime_relative() - v->last_load_time < reload_interval) {
-                 if (ff_check_interrupt(c->interrupt_callback))
+-                if (ff_check_interrupt(c->interrupt_callback))
++                if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                      return AVERROR_EXIT;
 -                av_usleep(100*1000);
 +                emscripten_sleep(100);
              }
              /* Enough time has elapsed since the last reload */
              goto reload;
-@@ -2540,25 +2616,27 @@
+@@ -1567,7 +1645,7 @@
+             ret = open_input(c, v, seg, &v->input);
+         }
+         if (ret < 0) {
+-            if (ff_check_interrupt(c->interrupt_callback))
++            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
+                 return AVERROR_EXIT;
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
+                    v->cur_seq_no,
+@@ -1580,6 +1658,11 @@
+                 segment_retries = 0;
+             } else {
+                 segment_retries++;
++
++                // For seg_max_retry=3: [1000, 2000, 4000]
++                int sleep_ms = (int) pow((double) 2, (double) segment_retries - 1) * 1000;
++                av_log(v->parent, AV_LOG_WARNING, "Sleeping for %d ms before retry\n", sleep_ms);
++                emscripten_sleep(sleep_ms);
+             }
+             goto reload;
+         }
+@@ -1601,7 +1684,7 @@
+         seg && seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL)) {
+         ret = open_input(c, v, seg, &v->input_next);
+         if (ret < 0) {
+-            if (ff_check_interrupt(c->interrupt_callback))
++            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
+                 return AVERROR_EXIT;
+             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
+                    v->cur_seq_no + 1,
+@@ -2540,25 +2623,27 @@
          strstr(p->buf, "#EXT-X-TARGETDURATION:") ||
          strstr(p->buf, "#EXT-X-MEDIA-SEQUENCE:")) {
  
@@ -406,7 +483,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.h
-@@ -0,0 +1,9 @@
+@@ -0,0 +1,10 @@
 +#ifndef JSFETCH_H
 +#define JSFETCH_H
 +
@@ -414,13 +491,14 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +int jsfetch_get_return_code(void);
 +void jsfetch_set_read_timeout(int ms);
 +void jsfetch_set_fetch_timeout(int ms);
++int jsfetch_already_aborted(void);
 +
 +#endif
  Index: ffmpeg-6.0.1/libavformat/jsfetch.c
 ===================================================================
 --- /dev/null
 +++ ffmpeg-6.0.1/libavformat/jsfetch.c
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,477 @@
 +/*
 + * JavaScript fetch metaprotocol for ffmpeg client
 + * Copyright (c) 2023 Yahweasel and contributors
@@ -461,6 +539,8 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +static const AVOption options[] = {
 +    { NULL }
 +};
++static volatile int jsfetch_aborted = 0;
++
 +#define CONFIG_JSFETCH_PROTOCOL 1
 +#if CONFIG_JSFETCH_PROTOCOL
 +static const AVClass jsfetch_context_class = {
@@ -538,6 +618,11 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +
 +void jsfetch_abort_request(void) {
 +  jsfetch_abort();
++  jsfetch_aborted = 1;
++}
++
++int jsfetch_already_aborted(void) {
++  return jsfetch_aborted;
 +}
 +
 +/**
@@ -592,8 +677,9 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +
 +    const idx = force_idx ? force_idx : Module.libavjsJSFetch.ctr++;
 +    const reader = response.body.getReader();
-+    Module.abortController.signal.addEventListener('abort', () => {
-+      reader.cancel();
++    Module.abortController.signal.addEventListener('abort', async () => {
++      // To cancel pending reads.
++      try { await reader.cancel(); } catch (e) { /* */};
 +    });
 +
 +    var jsfo = Module.libavjsJSFetch.fetches[idx] = {
@@ -686,7 +772,6 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        console.warn("jsfetch_read_js aborted.");
 +        return -0x54584945; /* AVERROR_EXIT*/
 +      }
-+      let timed_out = false;
 +      try {
 +        // Check for remainder
 +        if (jsfo.buf && jsfo.buf.value && jsfo.buf.value.length > 0) {
@@ -710,8 +795,7 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        if (race_res == "aborted") {
 +          return -0x54584945; /* AVERROR_EXIT*/
 +        } else if (race_res == "timed_out") {
-+          timed_out = true;
-+          jsfo.reader.cancel();
++          await jsfo.reader.cancel();
 +          throw `Timed out after ${Module.READ_TIMEOUT} ms.`;
 +        }
 +
@@ -751,17 +835,12 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 +        console.error("jsfetch_read_js error", e);
 +        Module.libavjsJSFetch.read_failures++;
 +
-+        // Cannot retry
++        // Cannot retry here
 +        if (!Module.libavjsJSFetch.support_range || !jsfo.enable_retries || Module.libavjsJSFetch.read_failures >= Module.MAX_READ_ATTEMPTS) {
 +          Module.returnCode = 1002; /* Read Error*/
-+
-+          // No need to throw for timeouts - it muddies our error detection.
-+          // Only throw for unexpected things.
-+          if (!timed_out) {
-+            Module.fsThrownError = e;
-+          }
-+
-+          return -11;  /* ECANCELED */;
++          
++          // hls.c can retry
++          return -11;  /* EAGAIN */;
 +        }
 +
 +        // Signal to retry
@@ -780,11 +859,12 @@ Index: ffmpeg-6.0.1/libavformat/hls.c
 + * Close a fetch connection (JavaScript side).
 + */
 +EM_JS(void, jsfetch_close_js, (int idx), {
-+    var jsfo = Module.libavjsJSFetch.fetches[idx];
-+    if (jsfo) {
-+      try { jsfo.reader.cancel(); } catch (ex) {}
-+      delete Module.libavjsJSFetch.fetches[idx];
-+    }
++  var jsfo = Module.libavjsJSFetch.fetches[idx];
++  if (jsfo) {
++    jsfo.reader.cancel().catch((e) => { /* */});
++
++    delete Module.libavjsJSFetch.fetches[idx];
++  }
 +});
 +
 +/**

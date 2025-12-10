@@ -38,6 +38,8 @@ typedef struct JSFetchContext {
 static const AVOption options[] = {
     { NULL }
 };
+static volatile int jsfetch_aborted = 0;
+
 #define CONFIG_JSFETCH_PROTOCOL 1
 #if CONFIG_JSFETCH_PROTOCOL
 static const AVClass jsfetch_context_class = {
@@ -115,6 +117,11 @@ EM_JS(void, jsfetch_abort, (), {
 
 void jsfetch_abort_request(void) {
   jsfetch_abort();
+  jsfetch_aborted = 1;
+}
+
+int jsfetch_already_aborted(void) {
+  return jsfetch_aborted;
 }
 
 /**
@@ -169,8 +176,9 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
 
     const idx = force_idx ? force_idx : Module.libavjsJSFetch.ctr++;
     const reader = response.body.getReader();
-    Module.abortController.signal.addEventListener('abort', () => {
-      reader.cancel();
+    Module.abortController.signal.addEventListener('abort', async () => {
+      // To cancel pending reads.
+      try { await reader.cancel(); } catch (e) { /* */};
     });
 
     var jsfo = Module.libavjsJSFetch.fetches[idx] = {
@@ -263,7 +271,6 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         console.warn("jsfetch_read_js aborted.");
         return -0x54584945; /* AVERROR_EXIT*/
       }
-      let timed_out = false;
       try {
         // Check for remainder
         if (jsfo.buf && jsfo.buf.value && jsfo.buf.value.length > 0) {
@@ -287,8 +294,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         if (race_res == "aborted") {
           return -0x54584945; /* AVERROR_EXIT*/
         } else if (race_res == "timed_out") {
-          timed_out = true;
-          jsfo.reader.cancel();
+          await jsfo.reader.cancel();
           throw `Timed out after ${Module.READ_TIMEOUT} ms.`;
         }
 
@@ -328,17 +334,12 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
         console.error("jsfetch_read_js error", e);
         Module.libavjsJSFetch.read_failures++;
 
-        // Cannot retry
+        // Cannot retry here
         if (!Module.libavjsJSFetch.support_range || !jsfo.enable_retries || Module.libavjsJSFetch.read_failures >= Module.MAX_READ_ATTEMPTS) {
           Module.returnCode = 1002; /* Read Error*/
-
-          // No need to throw for timeouts - it muddies our error detection.
-          // Only throw for unexpected things.
-          if (!timed_out) {
-            Module.fsThrownError = e;
-          }
-
-          return -11;  /* ECANCELED */;
+          
+          // hls.c can retry
+          return -11;  /* EAGAIN */;
         }
 
         // Signal to retry
@@ -357,11 +358,12 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
  * Close a fetch connection (JavaScript side).
  */
 EM_JS(void, jsfetch_close_js, (int idx), {
-    var jsfo = Module.libavjsJSFetch.fetches[idx];
-    if (jsfo) {
-      try { jsfo.reader.cancel(); } catch (ex) {}
-      delete Module.libavjsJSFetch.fetches[idx];
-    }
+  var jsfo = Module.libavjsJSFetch.fetches[idx];
+  if (jsfo) {
+    jsfo.reader.cancel().catch((e) => { /* */});
+
+    delete Module.libavjsJSFetch.fetches[idx];
+  }
 });
 
 /**

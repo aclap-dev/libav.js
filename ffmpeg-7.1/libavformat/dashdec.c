@@ -31,6 +31,7 @@
 #include "dash.h"
 #include "demux.h"
 #include "url.h"
+#include "jsfetch.h"
 
 #define INITIAL_BUFFER_SIZE 32768
 
@@ -1643,7 +1644,7 @@ static struct fragment *get_current_fragment(struct representation *pls)
     struct fragment *seg_ptr = NULL;
     DASHContext *c = pls->parent->priv_data;
 
-    while (( !ff_check_interrupt(c->interrupt_callback)&& pls->n_fragments > 0)) {
+    while (( !ff_check_interrupt(c->interrupt_callback) && !jsfetch_already_aborted() && pls->n_fragments > 0)) {
         if (pls->cur_seq_no < pls->n_fragments) {
             seg_ptr = pls->fragments[pls->cur_seq_no];
             seg = av_mallocz(sizeof(struct fragment));
@@ -1871,7 +1872,7 @@ restart:
 
         ret = open_input(c, v, v->cur_seg);
         if (ret < 0) {
-            if (ff_check_interrupt(c->interrupt_callback)) {
+            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted()) {
                 ret = AVERROR_EXIT;
                 goto end;
             }
@@ -1943,7 +1944,7 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation 
         close_demux_for_component(pls);
     }
 
-    if (ff_check_interrupt(&s->interrupt_callback)) {
+    if (ff_check_interrupt(&s->interrupt_callback) || jsfetch_already_aborted()) {
         ret = AVERROR_EXIT;
         goto fail;
     }
@@ -2277,7 +2278,7 @@ static int dash_read_packet(AVFormatContext *s, AVPacket *pkt)
     if (!cur) {
         return AVERROR_INVALIDDATA;
     }
-    while (!ff_check_interrupt(c->interrupt_callback) && !ret) {
+    while (!ff_check_interrupt(c->interrupt_callback) && !jsfetch_already_aborted() && !ret) {
         ret = av_read_frame(cur->ctx, pkt);
         if (ret >= 0) {
             /* If we got a packet, return it */

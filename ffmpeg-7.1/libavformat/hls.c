@@ -47,7 +47,9 @@
 #include "url.h"
 
 #include "hls_sample_encryption.h"
+#include "jsfetch.h"
 #include <emscripten.h>
+#include <math.h>
 
 #define INITIAL_BUFFER_SIZE 32768
 
@@ -1618,7 +1620,7 @@ reload:
             if (v->finished)
                 return AVERROR_EOF;
             while (av_gettime_relative() - v->last_load_time < reload_interval) {
-                if (ff_check_interrupt(c->interrupt_callback))
+                if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                     return AVERROR_EXIT;
                 emscripten_sleep(100);
             }
@@ -1643,7 +1645,7 @@ reload:
             ret = open_input(c, v, seg, &v->input);
         }
         if (ret < 0) {
-            if (ff_check_interrupt(c->interrupt_callback))
+            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                 return AVERROR_EXIT;
             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
                    v->cur_seq_no,
@@ -1656,6 +1658,11 @@ reload:
                 segment_retries = 0;
             } else {
                 segment_retries++;
+
+                // For seg_max_retry=3: [1000, 2000, 4000]
+                int sleep_ms = (int) pow((double) 2, (double) segment_retries - 1) * 1000;
+                av_log(v->parent, AV_LOG_WARNING, "Sleeping for %d ms before retry\n", sleep_ms);
+                emscripten_sleep(sleep_ms);
             }
             goto reload;
         }
@@ -1677,7 +1684,7 @@ reload:
         seg && seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL)) {
         ret = open_input(c, v, seg, &v->input_next);
         if (ret < 0) {
-            if (ff_check_interrupt(c->interrupt_callback))
+            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                 return AVERROR_EXIT;
             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
                    v->cur_seq_no + 1,
