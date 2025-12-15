@@ -20,6 +20,9 @@
 --enable-demuxer=mp3
 --enable-demuxer=mov
 --enable-muxer=mp3
+--enable-demuxer=webvtt
+--enable-demuxer=srt
+--enable-demuxer=ass
 --enable-decoder=mp3
 --enable-libmp3lame
 --enable-encoder=libmp3lame
