@@ -1961,8 +1961,10 @@ static int reopen_demux_for_component(AVFormatContext *s, struct representation 
         pls->ctx = NULL;
         goto fail;
     }
+    // Disable/hide seeking (last arg).
+    // We implement a seek within individual segments but not for the whole playlist.
     ffio_init_context(&pls->pb, avio_ctx_buffer, INITIAL_BUFFER_SIZE, 0,
-                      pls, read_data, NULL, c->is_live ? NULL : seek_data);
+                      pls, read_data, NULL, NULL);
     pls->pb.pub.seekable = 0;
 
     if ((ret = ff_copy_whiteblacklists(pls->ctx, s)) < 0)

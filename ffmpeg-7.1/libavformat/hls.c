@@ -1368,11 +1368,6 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg, 
             av_dict_set(&opts, "range_header", range_header, 0);
         }
       }
-    // Custom values used by us in jsfetch to prevent unnecessary seeking & retries.
-    av_dict_set_int(&opts, "jsfetch_skip_seek", 1, 0);
-    // Retry with the built in HLS option `seg_max_retry` instead.
-    av_dict_set_int(&opts, "jsfetch_skip_retry", 1, 0);
-
     av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
            seg->url, seg->url_offset, pls->index);
 
@@ -1658,11 +1653,6 @@ reload:
                 segment_retries = 0;
             } else {
                 segment_retries++;
-
-                // For seg_max_retry=3: [1000, 2000, 4000]
-                int sleep_ms = (int) pow((double) 2, (double) segment_retries - 1) * 1000;
-                av_log(v->parent, AV_LOG_WARNING, "Sleeping for %d ms before retry\n", sleep_ms);
-                emscripten_sleep(sleep_ms);
             }
             goto reload;
         }
