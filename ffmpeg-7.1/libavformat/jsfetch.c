@@ -63,6 +63,7 @@ EM_JS(void, jsfetch_init, (), {
   // Maybe set below during testing.
   Module.FETCH_TIMEOUT = Module.FETCH_TIMEOUT || 30 * 1000;
   Module.READ_TIMEOUT = Module.READ_TIMEOUT || 30 * 1000;
+  Module.INITIAL_RETRY_DELAY = Module.INITIAL_RETRY_DELAY || 250;
 
   Module.libavjsJSFetch = { ctr: 1, fetches: {}, pos: 0, read_failures: 0 };
   Module.abortController = new AbortController();
@@ -88,6 +89,14 @@ EM_JS(void, jsfetch_set_read_timeout_js, (int ms), {
 
 void jsfetch_set_read_timeout(int ms) {
   return jsfetch_set_read_timeout_js(ms);
+}
+
+EM_JS(void, jsfetch_set_initial_retry_delay_js, (int ms), {
+  Module.INITIAL_RETRY_DELAY = ms;
+});
+
+void jsfetch_set_initial_retry_delay(int ms) {
+  return jsfetch_set_initial_retry_delay_js(ms);
 }
 
 /**
@@ -155,12 +164,12 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
     // The server could also reject it with another code or close it if they don't support ranges.
     let response;
     if (probe_range_support) {
-      response = await Module.FetchWithRetry(fetchUrl, headers, 1, Module.FETCH_TIMEOUT, Module.abortController.signal);
+      response = await Module.FetchWithRetry(fetchUrl, headers, 1, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, Module.abortController.signal);
     }
 
     // Not probing for range support, or the probe failed.
     if (!probe_range_support || !response.ok) {
-      response = await Module.FetchWithRetry(fetchUrl, headers, Module.MAX_FETCH_ATTEMPTS, Module.FETCH_TIMEOUT, Module.abortController.signal);
+      response = await Module.FetchWithRetry(fetchUrl, headers, Module.MAX_FETCH_ATTEMPTS, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, Module.abortController.signal);
       if (response.aborted) {
         return -0x54584945; /* AVERROR_EXIT*/
       } else if (response.timeout) {
@@ -367,7 +376,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
             return -0x20464f45 /* AVERROR_EOF */;
           }
 
-          const delay = Math.pow(2, Module.libavjsJSFetch.read_failures) * 250;
+          const delay = Math.pow(2, Module.libavjsJSFetch.read_failures) * Module.INITIAL_RETRY_DELAY;
           console.warn(`Retrying read in ${delay} ms`);
           const abort_or_timeout = await Module.DoAbortableSleep(delay, Module.abortController.signal);
           if (abort_or_timeout == "aborted") {

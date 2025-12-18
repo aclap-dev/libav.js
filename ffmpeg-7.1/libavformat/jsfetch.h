@@ -5,6 +5,7 @@ void jsfetch_abort_request(void);
 int jsfetch_get_return_code(void);
 void jsfetch_set_read_timeout(int ms);
 void jsfetch_set_fetch_timeout(int ms);
+void jsfetch_set_initial_retry_delay(int ms);
 int jsfetch_already_aborted(void);
 
 #endif

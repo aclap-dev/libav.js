@@ -131,7 +131,8 @@
         ["ffmpeg_get_out_time_ms", "number", [], {"async": true}],
         ["ffmpeg_get_total_size_bytes", "number", [], {"async": true}],
         ["jsfetch_set_read_timeout", null, ["number"]],
-        ["jsfetch_set_fetch_timeout", null, ["number"]]
+        ["jsfetch_set_fetch_timeout", null, ["number"]],
+        ["jsfetch_set_initial_retry_delay", null, ["number"]]
     ],
 
     "fs": [
