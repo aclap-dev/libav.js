@@ -70,7 +70,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
      }
  
      if (nb_frames_dup || nb_frames_drop)
-@@ -943,7 +967,21 @@
+@@ -943,7 +967,20 @@
  #endif
  }
  
@@ -80,7 +80,6 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
 +
 +void ffmpeg_interrupt(void);
 +void ffmpeg_interrupt() {
-+    received_nb_signals++;
 +    jsfetch_abort_request();
 +}
 +
@@ -92,7 +91,7 @@ Index: ffmpeg-7.1/fftools/ffmpeg.c
  {
      Scheduler *sch = NULL;
  
-@@ -1009,8 +1047,24 @@
+@@ -1009,8 +1046,24 @@
          ret = 0;
  
      ffmpeg_cleanup(ret);

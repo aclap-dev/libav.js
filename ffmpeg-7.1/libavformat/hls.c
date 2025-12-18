@@ -47,7 +47,9 @@
 #include "url.h"
 
 #include "hls_sample_encryption.h"
+#include "jsfetch.h"
 #include <emscripten.h>
+#include <math.h>
 
 #define INITIAL_BUFFER_SIZE 32768
 
@@ -1366,11 +1368,6 @@ static int open_input(HLSContext *c, struct playlist *pls, struct segment *seg, 
             av_dict_set(&opts, "range_header", range_header, 0);
         }
       }
-    // Custom values used by us in jsfetch to prevent unnecessary seeking & retries.
-    av_dict_set_int(&opts, "jsfetch_skip_seek", 1, 0);
-    // Retry with the built in HLS option `seg_max_retry` instead.
-    av_dict_set_int(&opts, "jsfetch_skip_retry", 1, 0);
-
     av_log(pls->parent, AV_LOG_VERBOSE, "HLS request for url '%s', offset %"PRId64", playlist %d\n",
            seg->url, seg->url_offset, pls->index);
 
@@ -1618,7 +1615,7 @@ reload:
             if (v->finished)
                 return AVERROR_EOF;
             while (av_gettime_relative() - v->last_load_time < reload_interval) {
-                if (ff_check_interrupt(c->interrupt_callback))
+                if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                     return AVERROR_EXIT;
                 emscripten_sleep(100);
             }
@@ -1643,7 +1640,7 @@ reload:
             ret = open_input(c, v, seg, &v->input);
         }
         if (ret < 0) {
-            if (ff_check_interrupt(c->interrupt_callback))
+            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                 return AVERROR_EXIT;
             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
                    v->cur_seq_no,
@@ -1677,7 +1674,7 @@ reload:
         seg && seg->key_type == KEY_NONE && av_strstart(seg->url, "http", NULL)) {
         ret = open_input(c, v, seg, &v->input_next);
         if (ret < 0) {
-            if (ff_check_interrupt(c->interrupt_callback))
+            if (ff_check_interrupt(c->interrupt_callback) || jsfetch_already_aborted())
                 return AVERROR_EXIT;
             av_log(v->parent, AV_LOG_WARNING, "Failed to open segment %"PRId64" of playlist %d\n",
                    v->cur_seq_no + 1,
