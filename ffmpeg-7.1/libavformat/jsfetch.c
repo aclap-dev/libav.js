@@ -59,6 +59,7 @@ EM_JS(void, jsfetch_init, (), {
   }
   Module.MAX_FETCH_ATTEMPTS = 6;
   Module.MAX_READ_ATTEMPTS = 6;
+  Module.MAX_SIZE_TO_SKIP_ON_READ_FAILURE = 41943040; // 40 MB
   
   // Maybe set below during testing.
   Module.FETCH_TIMEOUT = Module.FETCH_TIMEOUT || 30 * 1000;
@@ -135,6 +136,16 @@ int jsfetch_already_aborted(void) {
   return jsfetch_aborted;
 }
 
+// Used only by seek, to close the request without deleting the jsfo.
+// Mainly to preserve the total size.
+EM_JS(void, jsfetch_abort_individual, (int idx), {
+  const jsfo = Module.libavjsJSFetch.fetches[idx];
+  if (!jsfo) {
+    return;
+  }
+  jsfo.abortController.abort();
+});
+
 /**
  * Open a fetch connection (JavaScript side).
  * Must return an Asyncify.
@@ -159,17 +170,24 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
     url = UTF8ToString(url);
     const fetchUrl = url.startsWith("jsfetch:") ? url.slice(8) : url;
 
+    // Abort
+    const requestAbortController = new AbortController();
+    const combinedSignal = AbortSignal.any([requestAbortController.signal, Module.abortController.signal]);
+
     // First, probe for range support. 
-    // No retries, we could get 416 (Range Not Satisfiable).
+    // No retries. We could get 416 (Range Not Satisfiable).
     // The server could also reject it with another code or close it if they don't support ranges.
     let response;
     if (probe_range_support) {
-      response = await Module.FetchWithRetry(fetchUrl, headers, 1, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, Module.abortController.signal);
+      response = await Module.FetchWithRetry(fetchUrl, headers, 1, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, combinedSignal);
+      if (!response.ok) {
+        delete headers.Range;
+      }
     }
 
     // Not probing for range support, or the probe failed.
     if (!probe_range_support || !response.ok) {
-      response = await Module.FetchWithRetry(fetchUrl, headers, Module.MAX_FETCH_ATTEMPTS, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, Module.abortController.signal);
+      response = await Module.FetchWithRetry(fetchUrl, headers, Module.MAX_FETCH_ATTEMPTS, Module.FETCH_TIMEOUT, Module.INITIAL_RETRY_DELAY, combinedSignal);
       if (response.aborted) {
         return -0x54584945; /* AVERROR_EXIT*/
       } else if (response.timeout) {
@@ -187,32 +205,33 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
     // ..Response is ok
 
     const accept_range = (response.headers.get("accept-ranges") || "").toLowerCase();
-    const support_range = (accept_range && accept_range == "bytes") || (response.status == 206 && response.headers.has("content-range"));
+    const content_range = response.headers.get("content-range");
+    const support_range = (accept_range && accept_range == "bytes") || (response.status == 206 && content_range != undefined);
 
-    // This could be a range request, so don't overwrite.
-    let content_length = 0;
-    if (force_idx && Module.libavjsJSFetch.fetches[force_idx]) {
-      content_length = Module.libavjsJSFetch.fetches[force_idx].content_length || 0;
-    } else {
-      content_length = parseInt(response.headers.get("content-length") || "0", 10);
+    let total_size = 0;
+    if (content_range) {
+      // The extra \\d here is intentional, because this goes through C first. \\d -> \d
+      const match = content_range.match(/bytes \\\\d+-\\\\d+\\\\/(\\\\d+)/);
+      total_size = match ? parseInt(match[1]) : 0;
     }
 
     const idx = force_idx ? force_idx : Module.libavjsJSFetch.ctr++;
     const reader = response.body.getReader();
 
-    Module.abortController.signal.addEventListener('abort', async () => {
+    combinedSignal.addEventListener('abort', async () => {
       try { await reader.cancel(); } catch (e) { /* */};
     });
 
-    // The \\d here is intentional, because this goes through C first. \\d -> \d
+    // Extra \\d same as above
     const pos = range ? Number(range.match(/bytes=(\\d+)/)?.[1] ?? 0) : 0;
 
     var jsfo = Module.libavjsJSFetch.fetches[idx] = {
+      abortController: requestAbortController,
       url,
       response,
       reader,
       support_range,
-      content_length,
+      total_size,
       pos,
       first_read: true,
       buf: null,
@@ -236,7 +255,7 @@ EM_JS(int, jsfetch_support_range_js, (int idx), {
  */
 EM_JS(double, jsfetch_get_size_js, (int idx), {
   const jsfo = Module.libavjsJSFetch.fetches[idx];
-  return jsfo ? jsfo.content_length : 0;
+  return jsfo ? jsfo.total_size : 0;
 });
 
 /**
@@ -359,7 +378,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
 
           return len;
         } catch (e) {
-          if (Module.abortController.signal.aborted) {
+          if (jsfo.abortController.signal.aborted || Module.abortController.signal.aborted) {
             console.warn("jsfetch_read_js aborted.");
             return -0x54584945; /* AVERROR_EXIT*/
           }
@@ -368,7 +387,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
           Module.libavjsJSFetch.read_failures++;
 
           // Cannot retry
-          const too_big_to_retry_without_seek = jsfo.content_length > 41943040; // 40 MB
+          const too_big_to_retry_without_seek = jsfo.total_size > Module.MAX_SIZE_TO_SKIP_ON_READ_FAILURE;
           if (Module.libavjsJSFetch.read_failures >= Module.MAX_READ_ATTEMPTS || (!jsfo.support_range && too_big_to_retry_without_seek)) {
             console.warn(`Cant retry. read_failures: ${Module.libavjsJSFetch.read_failures}, too_big: ${too_big_to_retry_without_seek}`);
             Module.returnCode = 1002; /* Read Error*/
@@ -378,7 +397,8 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
 
           const delay = Math.pow(2, Module.libavjsJSFetch.read_failures) * Module.INITIAL_RETRY_DELAY;
           console.warn(`Retrying read in ${delay} ms`);
-          const abort_or_timeout = await Module.DoAbortableSleep(delay, Module.abortController.signal);
+          const combinedSignal = AbortSignal.any([jsfo.abortController.signal, Module.abortController.signal]);
+          const abort_or_timeout = await Module.DoAbortableSleep(delay, combinedSignal);
           if (abort_or_timeout == "aborted") {
             return -0x54584945; /* AVERROR_EXIT*/
           }
@@ -455,15 +475,10 @@ static int64_t jsfetch_seek(URLContext *h, int64_t pos, int whence)
     // SEEK_END: Seek to end of stream + pos.
     // Usually pos is -1.
     if (whence == 2) {
-      double size = jsfetch_get_size_js(ctx->idx);
       pos += (int64_t) size;
     }
 
-    int ret = jsfetch_close(h);
-    if (ret < 0) {
-        av_log(h, AV_LOG_ERROR, "[jsfetch] jsfetch_close failed with error %d\n", ret);
-        return ret;
-    }
+    jsfetch_abort_individual(ctx->idx);
     int has_range = (pos >= 0);
     char range_header_buf[128];
     char *range_header = NULL;
@@ -476,7 +491,7 @@ static int64_t jsfetch_seek(URLContext *h, int64_t pos, int whence)
     // Force the same idx
     // NOTE: pos is set in jsfetch_open_js. 
     // If SEEK_CUR is then called, jsfetch_get_pos_js works.
-    ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, false);
+    int ret = jsfetch_open_js(h->filename, range_header, has_range, ctx->idx, false);
     if (ret < 0) {
       return ret;
     }
