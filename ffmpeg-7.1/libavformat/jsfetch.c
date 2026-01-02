@@ -117,7 +117,7 @@ int jsfetch_get_return_code() {
 }
 
 EM_JS(void, jsfetch_abort, (), {
-    var abortController = Module.abortController;
+    const abortController = Module.abortController;
     if (abortController) {
         abortController.abort(`Download aborted by user`);
     } else {
@@ -143,6 +143,7 @@ EM_JS(void, jsfetch_abort_individual, (int idx), {
   if (!jsfo) {
     return;
   }
+  jsfo.buf = null;
   jsfo.abortController.abort();
 });
 
@@ -225,10 +226,9 @@ EM_JS(int, jsfetch_open_js, (const char* url, char* range_header, bool has_range
     // Extra \\d same as above
     const pos = range ? Number(range.match(/bytes=(\\d+)/)?.[1] ?? 0) : 0;
 
-    var jsfo = Module.libavjsJSFetch.fetches[idx] = {
+    Module.libavjsJSFetch.fetches[idx] = {
       abortController: requestAbortController,
       url,
-      response,
       reader,
       support_range,
       total_size,
@@ -294,7 +294,7 @@ static int jsfetch_open(URLContext *h, const char *url, int flags, AVDictionary 
 EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
     return Asyncify.handleAsync(async function() {
       const self = async function() {
-        var jsfo = Module.libavjsJSFetch.fetches[idx];
+        const jsfo = Module.libavjsJSFetch.fetches[idx];
         if (Module.abortController.signal.aborted || !jsfo) {
           console.warn("jsfetch_read_js aborted.");
           return -0x54584945; /* AVERROR_EXIT*/
@@ -315,14 +315,22 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
           }
           
           // We may abort, timeout, or read successfully.
-          const timeout_p = Module.DoAbortableSleep(Module.READ_TIMEOUT, Module.abortController.signal);
+          const thisReadAbortController = new AbortController();
+          const combinedSignal = AbortSignal.any([thisReadAbortController.signal, Module.abortController.signal]);
+          const timeout_p = Module.DoAbortableSleep(Module.READ_TIMEOUT, combinedSignal);
           const read_p = jsfo.reader.read();
           const race_res = await Promise.race([timeout_p, read_p]);
+
+          // Manually cancel the timeout promise to avoid leaking.
+          thisReadAbortController.abort();
           
           // Aborted / Timed out
-          if (race_res == "aborted") {
+          if (race_res.timeout_id) {
+            clearTimeout(race_res.timeout_id);
+          }
+          if (race_res.aborted) {
             return -0x54584945; /* AVERROR_EXIT*/
-          } else if (race_res == "timed_out") {
+          } else if (race_res.timed_out) {
             await jsfo.reader.cancel();
             throw `Timed out after ${Module.READ_TIMEOUT} ms.`;
           }
@@ -398,8 +406,11 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
           const delay = Math.pow(2, Module.libavjsJSFetch.read_failures) * Module.INITIAL_RETRY_DELAY;
           console.warn(`Retrying read in ${delay} ms`);
           const combinedSignal = AbortSignal.any([jsfo.abortController.signal, Module.abortController.signal]);
-          const abort_or_timeout = await Module.DoAbortableSleep(delay, combinedSignal);
-          if (abort_or_timeout == "aborted") {
+          const abort_sleep_res = await Module.DoAbortableSleep(delay, combinedSignal);
+          if (abort_sleep_res.timeout_id) {
+            clearTimeout(abort_sleep_res.timeout_id);
+          }
+          if (abort_sleep_res.aborted) {
             return -0x54584945; /* AVERROR_EXIT*/
           }
 
@@ -425,7 +436,7 @@ EM_JS(int, jsfetch_read_js, (int idx, unsigned char *toBuf, int size), {
  * Close a fetch connection (JavaScript side).
  */
 EM_JS(void, jsfetch_close_js, (int idx), {
-  var jsfo = Module.libavjsJSFetch.fetches[idx];
+  const jsfo = Module.libavjsJSFetch.fetches[idx];
   if (jsfo) {
     jsfo.reader.cancel().catch((e) => { /* */});
 
